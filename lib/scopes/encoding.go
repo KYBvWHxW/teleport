@@ -97,6 +97,16 @@ func EncodeForKey(scope string) (string, error) {
 	return encoded, nil
 }
 
+func EncodeForKeyInfallible(scope string) string {
+	if scope == "" {
+		return encodedSeparatorString
+	}
+	encoded := NormalizeForEquality(scope)
+	encoded = strings.ReplaceAll(encoded, separator, encodedSeparatorString)
+	encoded = encodedSeparatorString + encoded + encodedSeparatorString
+	return encoded
+}
+
 // DecodeFromKey decodes a scope encoded by EncodeForKey.
 func DecodeFromKey(encodedScope string) (string, error) {
 	if encodedScope == encodedSeparatorString {
