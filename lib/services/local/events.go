@@ -38,12 +38,16 @@ import (
 	machineidv1 "github.com/gravitational/teleport/api/gen/proto/go/teleport/machineid/v1"
 	notificationsv1 "github.com/gravitational/teleport/api/gen/proto/go/teleport/notifications/v1"
 	provisioningv1 "github.com/gravitational/teleport/api/gen/proto/go/teleport/provisioning/v1"
+	scopesv1 "github.com/gravitational/teleport/api/gen/proto/go/teleport/scopes/v1"
 	userprovisioningpb "github.com/gravitational/teleport/api/gen/proto/go/teleport/userprovisioning/v2"
 	"github.com/gravitational/teleport/api/types"
+	"github.com/gravitational/teleport/api/types/accesslist"
+	"github.com/gravitational/teleport/api/types/header"
 	"github.com/gravitational/teleport/api/types/kubewaitingcontainer"
 	"github.com/gravitational/teleport/lib/backend"
 	"github.com/gravitational/teleport/lib/defaults"
 	"github.com/gravitational/teleport/lib/devicetrust"
+	"github.com/gravitational/teleport/lib/scopes"
 	scopedaccess "github.com/gravitational/teleport/lib/scopes/access"
 	"github.com/gravitational/teleport/lib/services"
 	"github.com/gravitational/teleport/lib/services/local/generic"
@@ -222,7 +226,11 @@ func (e *EventsService) NewWatcher(ctx context.Context, watch types.Watch) (type
 			}
 			parser = p
 		case types.KindAccessList:
-			parser = newAccessListParser()
+			parser = newAccessListParser(kind)
+		case types.KindAccessListMember:
+			parser = newAccessListMemberParser(kind)
+		case types.KindAccessListReview:
+			parser = newAccessListReviewParser(kind)
 		case types.KindAuditQuery:
 			parser = newAuditQueryParser()
 		case types.KindSecurityReport:
@@ -231,10 +239,6 @@ func (e *EventsService) NewWatcher(ctx context.Context, watch types.Watch) (type
 			parser = newSecurityReportStateParser()
 		case types.KindUserLoginState:
 			parser = newUserLoginStateParser()
-		case types.KindAccessListMember:
-			parser = newAccessListMemberParser()
-		case types.KindAccessListReview:
-			parser = newAccessListReviewParser()
 		case types.KindKubeWaitingContainer:
 			parser = newKubeWaitingContainerParser()
 		case types.KindNotification:
@@ -2613,22 +2617,70 @@ func (p *headlessAuthenticationParser) parse(event backend.Event) (types.Resourc
 	}
 }
 
-func newAccessListParser() *accessListParser {
+func trimScopePrefix(key backend.Key) (scope string, remaining []string, err error) {
+	parts := key.Components()
+	if len(parts) < 2 {
+		return "", nil, trace.NotFound("failed parsing %v", key.String())
+	}
+	encodedScope := parts[0]
+	scope, err = scopes.DecodeFromKey(encodedScope)
+	if err != nil {
+		return "", nil, trace.Wrap(err)
+	}
+	return scope, parts[1:], nil
+}
+
+func newAccessListParser(kind types.WatchKind) *accessListParser {
 	return &accessListParser{
-		baseParser: newBaseParser(backend.ExactKey(accessListPrefix)),
+		baseParser: newBaseParser(
+			backend.ExactKey(accessListPrefix),
+			backend.ExactKey(scopedPrefix, accessListPrefix),
+		),
+		// TODO(nklaassen/scopes): propagate scope filter when it is added to watch kind.
+		scopeFilter: nil,
 	}
 }
 
 type accessListParser struct {
 	baseParser
+	scopeFilter *scopesv1.Filter
 }
 
 func (p *accessListParser) parse(event backend.Event) (types.Resource, error) {
 	switch event.Type {
 	case types.OpDelete:
+		if key, found := event.Item.Key.CutPrefix(backend.ExactKey("scoped", accessListPrefix)); found {
+			scope, remaining, err := trimScopePrefix(key)
+			if err != nil {
+				return nil, trace.Wrap(err)
+			}
+			if len(remaining) != 1 {
+				return nil, trace.NotFound("failed parsing %v", event.Item.Key.String())
+			}
+			name := remaining[0]
+			if !scopes.MatchScope(p.scopeFilter, scope) {
+				return nil, nil
+			}
+			// Delete events for scoped resources use an AccessList rather than
+			// ResourceHeader, to include the scope.
+			return &accesslist.AccessList{
+				ResourceHeader: header.ResourceHeader{
+					Kind:    types.KindAccessList,
+					Version: types.V1,
+					Metadata: header.Metadata{
+						Name: name,
+					},
+				},
+				Scope: scope,
+			}, nil
+		}
+
 		name := event.Item.Key.TrimPrefix(backend.NewKey(accessListPrefix)).String()
 		if name == "" {
 			return nil, trace.NotFound("failed parsing %v", event.Item.Key.String())
+		}
+		if !scopes.MatchScope(p.scopeFilter, "") {
+			return nil, nil
 		}
 
 		return &types.ResourceHeader{
@@ -2640,10 +2692,17 @@ func (p *accessListParser) parse(event backend.Event) (types.Resource, error) {
 			},
 		}, nil
 	case types.OpPut:
-		return services.UnmarshalAccessList(event.Item.Value,
+		acl, err := services.UnmarshalAccessList(event.Item.Value,
 			services.WithExpires(event.Item.Expires),
 			services.WithRevision(event.Item.Revision),
 		)
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+		if !scopes.MatchScope(p.scopeFilter, acl.GetScope()) {
+			return nil, nil
+		}
+		return acl, nil
 	default:
 		return nil, trace.BadParameter("event %v is not supported", event.Type)
 	}
@@ -2790,24 +2849,80 @@ func (p *userLoginStateParser) parse(event backend.Event) (types.Resource, error
 	}
 }
 
-func newAccessListMemberParser() *accessListMemberParser {
+func newAccessListMemberParser(kind types.WatchKind) *accessListMemberParser {
 	return &accessListMemberParser{
-		baseParser: newBaseParser(backend.ExactKey(accessListMemberPrefix)),
+		baseParser: newBaseParser(
+			backend.ExactKey(accessListMemberPrefix),
+			backend.ExactKey("scoped", accessListMemberPrefix),
+		),
+		// TODO(nklaassen/scopes): propagate scope filter when it is added to watch kind.
+		scopeFilter: nil,
 	}
 }
 
 type accessListMemberParser struct {
 	baseParser
+	scopeFilter *scopesv1.Filter
 }
 
 func (p *accessListMemberParser) parse(event backend.Event) (types.Resource, error) {
 	switch event.Type {
 	case types.OpDelete:
+		if key, found := event.Item.Key.CutPrefix(backend.ExactKey(scopedPrefix, accessListMemberPrefix)); found {
+			listScope, remaining, err := trimScopePrefix(key)
+			if err != nil {
+				return nil, trace.Wrap(err)
+			}
+			if len(remaining) != 3 {
+				return nil, trace.NotFound("failed parsing %v", event.Item.Key.String())
+			}
+			// The list scope is equal to the scope of the access list member resource.
+			if !scopes.MatchScope(p.scopeFilter, listScope) {
+				return nil, nil
+			}
+			listName, encodedMemberScope, memberName := remaining[0], remaining[1], remaining[2]
+			memberScope, err := scopes.DecodeFromKey(encodedMemberScope)
+			if err != nil {
+				return nil, trace.Wrap(err)
+			}
+			listSQN := scopes.QualifiedName{
+				Scope: listScope,
+				Name:  listName,
+			}
+			memberSQN := scopes.QualifiedName{
+				Scope: memberScope,
+				Name:  memberName,
+			}
+			membershipKind := accesslist.MembershipKindUnspecified
+			if memberScope != "" {
+				membershipKind = accesslist.MembershipKindScopedList
+			}
+			// Delete events for scoped resources use an AccessListMember rather than
+			// ResourceHeader, to include the scope.
+			return &accesslist.AccessListMember{
+				ResourceHeader: header.ResourceHeader{
+					Kind:    types.KindAccessListMember,
+					Version: types.V1,
+					Metadata: header.Metadata{
+						Name: memberSQN.String(),
+					},
+				},
+				Scope: listScope,
+				Spec: accesslist.AccessListMemberSpec{
+					AccessList:     listSQN.String(),
+					Name:           memberSQN.String(),
+					MembershipKind: membershipKind,
+				},
+			}, nil
+		}
 		key := event.Item.Key.TrimPrefix(backend.NewKey(accessListMemberPrefix))
 		if len(key.Components()) < 2 {
 			return nil, trace.NotFound("failed parsing %v", event.Item.Key.String())
 		}
 		accessList := key.Components()[0]
+		if !scopes.MatchScope(p.scopeFilter, "") {
+			return nil, nil
+		}
 
 		return &types.ResourceHeader{
 			Kind:    types.KindAccessListMember,
@@ -2819,31 +2934,79 @@ func (p *accessListMemberParser) parse(event backend.Event) (types.Resource, err
 			},
 		}, nil
 	case types.OpPut:
-		return services.UnmarshalAccessListMember(event.Item.Value,
+		member, err := services.UnmarshalAccessListMember(event.Item.Value,
 			services.WithExpires(event.Item.Expires),
 			services.WithRevision(event.Item.Revision),
 		)
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+		if !scopes.MatchScope(p.scopeFilter, member.GetScope()) {
+			return nil, nil
+		}
+		return member, nil
 	default:
 		return nil, trace.BadParameter("event %v is not supported", event.Type)
 	}
 }
 
-func newAccessListReviewParser() *accessListReviewParser {
+func newAccessListReviewParser(kind types.WatchKind) *accessListReviewParser {
 	return &accessListReviewParser{
-		baseParser: newBaseParser(backend.ExactKey(accessListReviewPrefix)),
+		baseParser: newBaseParser(
+			backend.ExactKey(accessListReviewPrefix),
+			backend.ExactKey(scopedPrefix, accessListReviewPrefix),
+		),
+		// TODO(nklaassen/scopes): propagate scope filter when it is added to watch kind.
+		scopeFilter: nil,
 	}
 }
 
 type accessListReviewParser struct {
 	baseParser
+	scopeFilter *scopesv1.Filter
 }
 
 func (p *accessListReviewParser) parse(event backend.Event) (types.Resource, error) {
 	switch event.Type {
 	case types.OpDelete:
+		if key, found := event.Item.Key.CutPrefix(backend.ExactKey(scopedPrefix, accessListReviewPrefix)); found {
+			listScope, remaining, err := trimScopePrefix(key)
+			if err != nil {
+				return nil, trace.Wrap(err)
+			}
+			if len(remaining) != 2 {
+				return nil, trace.NotFound("failed parsing %v", event.Item.Key.String())
+			}
+			if !scopes.MatchScope(p.scopeFilter, listScope) {
+				return nil, nil
+			}
+			listName, reviewName := remaining[0], remaining[1]
+			listSQN := scopes.QualifiedName{
+				Scope: listScope,
+				Name:  listName,
+			}
+			// Delete events for scoped resources use a Review rather than
+			// ResourceHeader, to include the scope.
+			return &accesslist.Review{
+				ResourceHeader: header.ResourceHeader{
+					Kind:    types.KindAccessListReview,
+					Version: types.V1,
+					Metadata: header.Metadata{
+						Name: reviewName,
+					},
+				},
+				Scope: listScope,
+				Spec: accesslist.ReviewSpec{
+					AccessList: listSQN.String(),
+				},
+			}, nil
+		}
 		key := event.Item.Key.TrimPrefix(backend.NewKey(accessListReviewPrefix))
 		if len(key.Components()) < 2 {
 			return nil, trace.NotFound("failed parsing %v", event.Item.Key.String())
+		}
+		if !scopes.MatchScope(p.scopeFilter, "") {
+			return nil, nil
 		}
 		accessList := key.Components()[0]
 
@@ -2857,10 +3020,17 @@ func (p *accessListReviewParser) parse(event backend.Event) (types.Resource, err
 			},
 		}, nil
 	case types.OpPut:
-		return services.UnmarshalAccessListReview(event.Item.Value,
+		review, err := services.UnmarshalAccessListReview(event.Item.Value,
 			services.WithExpires(event.Item.Expires),
 			services.WithRevision(event.Item.Revision),
 		)
+		if err != nil {
+			return nil, trace.Wrap(err)
+		}
+		if !scopes.MatchScope(p.scopeFilter, review.GetScope()) {
+			return nil, nil
+		}
+		return review, nil
 	default:
 		return nil, trace.BadParameter("event %v is not supported", event.Type)
 	}
