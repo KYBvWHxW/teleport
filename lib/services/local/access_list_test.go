@@ -1833,6 +1833,149 @@ func TestAccessListReviewCRUD(t *testing.T) {
 	require.NoError(t, err)
 }
 
+func TestAccessListReviewCRUDScoped(t *testing.T) {
+	ctx := context.Background()
+	clock := clockwork.NewFakeClock()
+
+	mem, err := memory.New(memory.Config{
+		Context: ctx,
+		Clock:   clock,
+	})
+	require.NoError(t, err)
+
+	service := newAccessListService(t, mem, modulestest.EnterpriseModules())
+
+	listName := scopes.QualifiedName{Scope: "/eng/platform", Name: "reviewed"}
+	unscopedListName := scopes.QualifiedName{Name: listName.Name}
+	unscopedMemberName := scopes.QualifiedName{Name: "alice"}
+	scopedMemberName := scopes.QualifiedName{Scope: "/eng", Name: "team"}
+
+	accessList, err := service.UpsertAccessList(ctx, newScopedAccessList(t, listName, clock))
+	require.NoError(t, err)
+	_, err = service.UpsertAccessList(ctx, newScopedAccessList(t, unscopedListName, clock))
+	require.NoError(t, err)
+	_, err = service.UpsertAccessList(ctx, newScopedAccessList(t, scopedMemberName, clock))
+	require.NoError(t, err)
+
+	unscopedMember := newScopedAccessListMember(t, listName, unscopedMemberName, withMembershipKind(accesslist.MembershipKindUser))
+	scopedMember := newScopedAccessListMember(t, listName, scopedMemberName, withMembershipKind(accesslist.MembershipKindScopedList))
+	_, returnedMembers, err := service.UpsertAccessListWithMembers(ctx, accessList, []*accesslist.AccessListMember{unscopedMember, scopedMember})
+	require.NoError(t, err)
+	require.Len(t, returnedMembers, 2)
+
+	review, err := accesslist.NewReviewWithScope(header.Metadata{Name: "ignored-by-create"}, accesslist.ReviewSpec{
+		AccessList: listName.String(),
+		Reviewers:  []string{"user1"},
+		ReviewDate: time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC),
+		Changes: accesslist.ReviewChanges{
+			RemovedMembers:         []string{unscopedMemberName.Name},
+			ScopedRemovedMembers:   []string{scopedMemberName.String()},
+			ReviewFrequencyChanged: accesslist.ThreeMonths,
+		},
+	}, listName.Scope)
+	require.NoError(t, err)
+
+	createdReview, nextAuditDate, err := service.CreateAccessListReview(ctx, review)
+	require.NoError(t, err)
+	require.NotEmpty(t, createdReview.GetName())
+	require.Equal(t, listName.Scope, createdReview.Scope)
+	require.Equal(t, listName.String(), createdReview.Spec.AccessList)
+	updatedAccessList, err := service.GetAccessListV2(ctx, accesslistv1.GetAccessListRequest_builder{
+		Scope: listName.Scope,
+		Name:  listName.Name,
+	}.Build())
+	require.NoError(t, err)
+	require.Equal(t, updatedAccessList.Spec.Audit.NextAuditDate, nextAuditDate)
+	require.Equal(t, accesslist.ThreeMonths, updatedAccessList.Spec.Audit.Recurrence.Frequency)
+
+	_, err = service.GetAccessListMemberV2(ctx, accesslistv1.GetAccessListMemberRequest_builder{
+		AccessListScope: listName.Scope,
+		AccessList:      listName.Name,
+		MemberName:      unscopedMemberName.Name,
+	}.Build())
+	require.True(t, trace.IsNotFound(err), "expected not found error, got %v", err)
+	_, err = service.GetAccessListMemberV2(ctx, accesslistv1.GetAccessListMemberRequest_builder{
+		AccessListScope: listName.Scope,
+		AccessList:      listName.Name,
+		MemberScope:     scopedMemberName.Scope,
+		MemberName:      scopedMemberName.Name,
+	}.Build())
+	require.True(t, trace.IsNotFound(err), "expected not found error, got %v", err)
+
+	reviews, nextToken, err := service.ListAccessListReviewsV2(ctx, accesslistv1.ListAccessListReviewsRequest_builder{
+		AccessListScope: listName.Scope,
+		AccessList:      listName.Name,
+		PageSize:        1,
+	}.Build())
+	require.NoError(t, err)
+	require.Empty(t, nextToken)
+	require.Len(t, reviews, 1)
+	require.Equal(t, createdReview.GetName(), reviews[0].GetName())
+	require.Equal(t, listName.Scope, reviews[0].Scope)
+
+	reviews, nextToken, err = service.ListAccessListReviews(ctx, unscopedListName.Name, 1, "")
+	require.NoError(t, err)
+	require.Empty(t, nextToken)
+	require.Empty(t, reviews)
+
+	err = service.DeleteAccessListReviewV2(ctx, accesslistv1.DeleteAccessListReviewRequest_builder{
+		AccessListScope: listName.Scope,
+		AccessListName:  listName.Name,
+		ReviewName:      createdReview.GetName(),
+	}.Build())
+	require.NoError(t, err)
+
+	reviews, _, err = service.ListAccessListReviewsV2(ctx, accesslistv1.ListAccessListReviewsRequest_builder{
+		AccessListScope: listName.Scope,
+		AccessList:      listName.Name,
+	}.Build())
+	require.NoError(t, err)
+	require.Empty(t, reviews)
+}
+
+func TestCreateAccessListReviewScopedValidation(t *testing.T) {
+	ctx := context.Background()
+	clock := clockwork.NewFakeClock()
+
+	mem, err := memory.New(memory.Config{
+		Context: ctx,
+		Clock:   clock,
+	})
+	require.NoError(t, err)
+
+	service := newAccessListService(t, mem, modulestest.EnterpriseModules())
+	listName := scopes.QualifiedName{Scope: "/eng", Name: "reviewed"}
+	_, err = service.UpsertAccessList(ctx, newScopedAccessList(t, listName, clock))
+	require.NoError(t, err)
+
+	newReview := func(t *testing.T) *accesslist.Review {
+		t.Helper()
+		review, err := accesslist.NewReviewWithScope(header.Metadata{Name: "review"}, accesslist.ReviewSpec{
+			AccessList: listName.String(),
+			Reviewers:  []string{"user1"},
+			ReviewDate: time.Date(2023, 1, 1, 0, 0, 0, 0, time.UTC),
+		}, listName.Scope)
+		require.NoError(t, err)
+		return review
+	}
+
+	t.Run("review scope must match access list scope", func(t *testing.T) {
+		review := newReview(t)
+		review.Scope = "/ops"
+
+		_, _, err := service.CreateAccessListReview(ctx, review)
+		require.ErrorContains(t, err, `access list review scope "/ops" does not match the scope of the reviewed list "/eng"`)
+	})
+
+	t.Run("membership requirements are rejected", func(t *testing.T) {
+		review := newReview(t)
+		review.Spec.Changes.MembershipRequirementsChanged = &accesslist.Requires{Roles: []string{"role"}}
+
+		_, _, err := service.CreateAccessListReview(ctx, review)
+		require.ErrorContains(t, err, "scoped access lists cannot contain membership requirements")
+	})
+}
+
 func Test_CreateAccessListReview_NestedListMemberRemoval(t *testing.T) {
 	ctx := context.Background()
 	clock := clockwork.NewFakeClock()
