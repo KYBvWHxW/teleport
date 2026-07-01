@@ -1144,13 +1144,18 @@ func (a *ServerWithRoles) ClearAlertAcks(ctx context.Context, req proto.ClearAle
 }
 
 func (a *ScopedServerWithRoles) UpsertNode(ctx context.Context, s types.Server) (*types.KeepAlive, error) {
-	ruleCtx := a.scopedContext.RuleContext()
-	// Note: UpsertNode doesn't allow any namespaces but "default".
-	// The Decision API only checks on the default namespace.
-	if err := a.scopedContext.CheckerContext.Decision(ctx, s.GetScope(), func(checker *services.ScopedAccessChecker) error {
-		return checker.CheckAccessToRules(&ruleCtx, types.KindNode, types.VerbCreate, types.VerbUpdate)
-	}); err != nil {
-		return nil, trace.Wrap(err)
+	if err := a.agentResourceAction(ctx, s.GetName(), types.RoleNode); err != nil {
+		if !errors.Is(err, ErrNoAgentIdentity) {
+			return nil, trace.Wrap(err)
+		}
+		ruleCtx := a.scopedContext.RuleContext()
+		// Note: UpsertNode doesn't allow any namespaces but "default".
+		// The Decision API only checks on the default namespace.
+		if err := a.scopedContext.CheckerContext.Decision(ctx, s.GetScope(), func(checker *services.ScopedAccessChecker) error {
+			return checker.CheckAccessToRules(&ruleCtx, types.KindNode, types.VerbCreate, types.VerbUpdate)
+		}); err != nil {
+			return nil, trace.Wrap(err)
+		}
 	}
 
 	agentScope := a.scopedContext.Identity.GetIdentity().GetAgentScope()
@@ -1158,10 +1163,6 @@ func (a *ScopedServerWithRoles) UpsertNode(ctx context.Context, s types.Server) 
 		if nodeScope != agentScope {
 			return nil, trace.AccessDenied("node scope %q does not match agent identity scope %q", nodeScope, agentScope)
 		}
-	}
-
-	if err := a.agentResourceAction(ctx, s.GetName(), types.RoleNode); err != nil && !errors.Is(err, ErrNoAgentIdentity) {
-		return nil, trace.Wrap(err)
 	}
 
 	return a.authServer.UpsertNode(ctx, s)
