@@ -187,6 +187,7 @@ type testPack struct {
 	appAuthConfigs          *local.AppAuthConfigService
 	summarizer              *local.SummarizerService
 	subCA                   *local.SubCAService
+	foos                    *local.FooService
 }
 
 // resourceOps contains helpers to modify the state of either types.Resource or types.Resource153  which
@@ -563,6 +564,11 @@ func newPackWithoutCache(dir string, opts ...packOption) (*testPack, error) {
 		return nil, trace.Wrap(err)
 	}
 
+	p.foos, err = local.NewFooService(p.backend)
+	if err != nil {
+		return nil, trace.Wrap(err)
+	}
+
 	return p, nil
 }
 
@@ -632,6 +638,7 @@ func newPack(t testing.TB, setupConfig func(c Config) Config, opts ...packOption
 		StaticScopedToken:       p.clusterConfigS,
 		Summarizer:              p.summarizer,
 		SubCAService:            p.subCA,
+		FooUpstream:             p.foos,
 	}))
 	if err != nil {
 		return nil, trace.Wrap(err)
