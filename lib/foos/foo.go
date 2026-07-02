@@ -48,3 +48,9 @@ func StrongValidate(foo *foov1.Foo) error {
 	}
 	return nil
 }
+
+// Cursor returns a cursor or token that should be used in paginated list
+// operations, or as range bounds on range operations for Foos.
+func Cursor(foo *foov1.Foo) (string, error) {
+	return scopes.MakeResourceCursor(foo.GetScope(), foo.GetMetadata().GetName())
+}
