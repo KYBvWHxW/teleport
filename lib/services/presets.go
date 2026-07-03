@@ -35,6 +35,7 @@ import (
 	labelv1 "github.com/gravitational/teleport/api/gen/proto/go/teleport/label/v1"
 	"github.com/gravitational/teleport/api/types"
 	apiutils "github.com/gravitational/teleport/api/utils"
+	"github.com/gravitational/teleport/lib/foos"
 	"github.com/gravitational/teleport/lib/modules"
 	"github.com/gravitational/teleport/lib/scopes/access"
 	"github.com/gravitational/teleport/lib/utils/set"
@@ -892,6 +893,7 @@ func NewPresetTerraformProviderRole() types.Role {
 					types.NewRule(access.KindScopedRoleAssignment, RW()),
 					types.NewRule(types.KindDatabaseObjectImportRule, RW()),
 					types.NewRule(types.KindBeamsConfig, RW()),
+					types.NewRule(foos.Kind, RW()),
 				},
 			},
 		},

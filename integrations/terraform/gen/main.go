@@ -1222,6 +1222,34 @@ var (
 			DeleteRequest:            "DeleteDatabaseObjectImportRuleRequest",
 		},
 	}
+	foo = payload{
+		Name:                  "Foo",
+		TypeName:              "Foo",
+		VarName:               "foo",
+		GetMethod:             "FooClient().GetFoo",
+		CreateMethod:          "FooClient().CreateFoo",
+		UpsertMethodArity:     2,
+		UpdateMethod:          "FooClient().UpsertFoo",
+		DeleteMethod:          "FooClient().DeleteFoo",
+		ID:                    "foo.GetMetadata().GetName()",
+		Kind:                  "foo",
+		HasStaticID:           false,
+		ProtoPackage:          "foov1",
+		ProtoPackagePath:      "github.com/gravitational/teleport/api/gen/proto/go/teleport/foo/v1",
+		SchemaPackage:         "schemav1",
+		SchemaPackagePath:     "github.com/gravitational/teleport/integrations/terraform/tfschema/foo/v1",
+		TerraformResourceType: "teleport_foo",
+		IsPlainStruct:         true,
+		ForceSetKind:          `"foo"`,
+		RequestWrapper: &RequestWrapper{
+			RequestResourceField: "Foo",
+			GetRequest:           "GetFooRequest",
+			CreateRequest:        "CreateFooRequest",
+			UpdateRequest:        "UpsertFooRequest",
+			DeleteRequest:        "DeleteFooRequest",
+		},
+		Scoped: true,
+	}
 	/*
 		//
 		// Example payload, copy this and replace every "example", "v1", and "TypeA" reference with your resource.
@@ -1351,6 +1379,8 @@ func genTFSchema() {
 	generateDataSource(workloadCluster, pluralDataSource)
 	generateResource(databaseObjectImportRule, pluralResource)
 	generateDataSource(databaseObjectImportRule, pluralDataSource)
+	generateResource(foo, pluralResource)
+	generateDataSource(foo, pluralDataSource)
 	// Add resources here, use the singular resource for singletons and the plural resource for regular resources.
 }
 

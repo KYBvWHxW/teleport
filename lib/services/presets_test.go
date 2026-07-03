@@ -32,6 +32,7 @@ import (
 	apidefaults "github.com/gravitational/teleport/api/defaults"
 	"github.com/gravitational/teleport/api/types"
 	apiutils "github.com/gravitational/teleport/api/utils"
+	"github.com/gravitational/teleport/lib/foos"
 	"github.com/gravitational/teleport/lib/modules"
 	"github.com/gravitational/teleport/lib/scopes/access"
 )
@@ -784,6 +785,7 @@ func TestAddRoleDefaults(t *testing.T) {
 							types.NewRule(access.KindScopedRoleAssignment, RW()),
 							types.NewRule(types.KindDatabaseObjectImportRule, RW()),
 							types.NewRule(types.KindBeamsConfig, RW()),
+							types.NewRule(foos.Kind, RW()),
 						},
 					},
 				},

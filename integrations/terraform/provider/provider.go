@@ -589,6 +589,7 @@ func (p *Provider) GetResources(_ context.Context) (map[string]tfsdk.ResourceTyp
 		"teleport_scoped_role":                resourceTeleportScopedRoleType{},
 		"teleport_scoped_role_assignment":     resourceTeleportScopedRoleAssignmentType{},
 		"teleport_db_object_import_rule":      resourceTeleportDatabaseObjectImportRuleType{},
+		"teleport_foo":                        resourceTeleportFooType{},
 	}, nil
 }
 
@@ -642,6 +643,7 @@ func (p *Provider) GetDataSources(_ context.Context) (map[string]tfsdk.DataSourc
 		//   required on a resource also need to be set on the data source
 		//   definition.
 		"teleport_workload_cluster": dataSourceTeleportWorkloadClusterType{},
+		"teleport_foo":              dataSourceTeleportFooType{},
 	}, nil
 }
 
