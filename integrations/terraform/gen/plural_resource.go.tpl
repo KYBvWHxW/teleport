@@ -54,6 +54,7 @@ import (
 {{- end }}
 {{- if .Scoped }}
 	"github.com/gravitational/teleport/lib/scopes"
+	"strings"
 {{- end }}
 
 	{{ schemaImport . }}
@@ -867,10 +868,16 @@ func (r resourceTeleport{{.Name}}) ImportState(ctx context.Context, req tfsdk.Im
 	}
 {{- end}}
 {{- if .Scoped}}
-	qn, err := scopes.ParseQualifiedName(req.ID)
-	if err != nil {
-		resp.Diagnostics.Append(diagFromWrappedErr("Error parsing {{.Name}} ID", trace.Wrap(err), "{{.Kind}}"))
-		return
+	var qn scopes.QualifiedName
+	if strings.Contains(req.ID, "::") {
+		parsedQN, err := scopes.ParseQualifiedName(req.ID)
+		if err != nil {
+			resp.Diagnostics.Append(diagFromWrappedErr("Error parsing {{.Name}} ID", trace.Wrap(err), "{{.Kind}}"))
+			return
+		}
+		qn = parsedQN
+	} else {
+		qn = scopes.QualifiedName{ Name: req.ID }
 	}
 {{- end}}
 {{- if .RequestWrapper}}

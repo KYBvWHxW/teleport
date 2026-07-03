@@ -46,7 +46,7 @@ clean: tfclean
 build: clean
 # Turning off GOWORK to prevent missing package errors.
 	GOWORK=off GOOS=$(OS) GOARCH=$(ARCH) $(CGOFLAG) \
-		go build -tags "kustomize_disable_go_plugin_support,terraformprovider" \
+		go build -tags "kustomize_disable_go_plugin_support,terraformprovider,teleport_protohybrid" \
 		-o $(BUILDDIR)/$(BINARY_NAME) $(BUILDFLAGS)
 
 build-darwin-universal: $(addprefix $(BUILDDIR)/terraform-provider-teleport_,arm64 amd64)
@@ -270,7 +270,7 @@ ifndef TERRAFORM_EXISTS
 	@exit -1
 endif
 
-	gotestsum --junitfile $(TEST_LOG_DIR)/unit-tests-terraform.xml --jsonfile unit-tests-terraform.json -- ./testlib -v $(TEST_ARGS)
+	gotestsum --junitfile $(TEST_LOG_DIR)/unit-tests-terraform.xml --jsonfile unit-tests-terraform.json -- ./testlib -v -tags teleport_protohybrid $(TEST_ARGS)
 
 testlib/plugin_ent_test.go:
 	go generate testlib/plugin_test.go
