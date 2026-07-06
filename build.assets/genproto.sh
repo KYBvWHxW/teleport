@@ -50,6 +50,7 @@ main() {
 
   # Generate go, go-grpc and connect-go protos (preferred).
   echoed buf generate --template=buf-go.gen.yaml
+  echoed buf generate --template=buf-go-retag.gen.yaml
   echoed buf generate --template=buf-connect-go.gen.yaml
 
   # Generate TS protos.
