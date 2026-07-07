@@ -18,77 +18,45 @@ package discovery
 
 import (
 	"cmp"
-	"maps"
 	"slices"
-	"strings"
-	"time"
 
 	discoveryconfigv1 "github.com/gravitational/teleport/api/gen/proto/go/teleport/discoveryconfig/v1"
-	"github.com/gravitational/teleport/api/types"
 	"github.com/gravitational/teleport/api/types/discoveryconfig"
 )
 
 const (
 	summaryStatusNotReporting = "not reporting yet"
 
-	resultKindNotReporting     = "not_reporting"
-	resultKindCounts           = "counts"
-	resultKindUnsupported      = "unsupported"
-	resultKindNoResourceStatus = "no_resource_status"
-
-	resultMessageNotReporting     = "no status reported by a Discovery Service"
-	resultMessageUnsupported      = "detailed counts are not available for this resource type"
-	resultMessageNoResourceStatus = "no resource status reported for this discovery target"
+	resourceKindAWSEC2  = "AWS EC2"
+	resourceKindAWSRDS  = "AWS RDS"
+	resourceKindAWSEKS  = "AWS EKS"
+	resourceKindAzureVM = "Azure VM"
 )
 
-type resourceKey struct {
-	cloud        string
-	resourceType string
-	integration  string
+type resourceBucket struct {
+	kind     string
+	cloud    string
+	summary  func(*discoveryconfigv1.DiscoverSummary) *discoveryconfigv1.ResourceSummary
+	sortRank int
 }
 
 func newDiscoverySummary(configs []*discoveryconfig.DiscoveryConfig, cloudProviders cloudProviderConfig) discoverySummary {
 	out := make(discoverySummary, 0, len(configs))
 	for _, dc := range configs {
-		configStatus := summarizeConfigStatus(dc.Status)
-		resourcesByKey := make(map[resourceKey]*resourceSummary)
-		if cloudProviders.aws {
-			addAWSResources(resourcesByKey, dc, configStatus)
-		}
-		if cloudProviders.azure {
-			addAzureResources(resourcesByKey, dc, configStatus)
-		}
-
-		resources := make([]resourceSummary, 0, len(resourcesByKey))
-		for _, row := range resourcesByKey {
-			resource := *row
-			slices.SortFunc(resource.Scopes, func(a, b resourceScope) int {
-				return cmp.Or(
-					cmp.Compare(strings.Join(a.Regions, "\x00"), strings.Join(b.Regions, "\x00")),
-					cmp.Compare(strings.Join(a.Subscriptions, "\x00"), strings.Join(b.Subscriptions, "\x00")),
-					cmp.Compare(strings.Join(a.ResourceGroups, "\x00"), strings.Join(b.ResourceGroups, "\x00")),
-					cmp.Compare(strings.Join(a.MatchTags, "\x00"), strings.Join(b.MatchTags, "\x00")),
-				)
-			})
-			resources = append(resources, resource)
-		}
-		if len(resources) == 0 {
-			continue
-		}
-		slices.SortFunc(resources, func(a, b resourceSummary) int {
-			return cmp.Or(
-				cmp.Compare(a.Cloud, b.Cloud),
-				cmp.Compare(a.ResourceType, b.ResourceType),
-				cmp.Compare(a.Integration, b.Integration),
-			)
-		})
-
-		out = append(out, configSummary{
+		summary := configSummary{
 			Name:           dc.GetName(),
 			DiscoveryGroup: dc.Spec.DiscoveryGroup,
-			Status:         configStatus,
-			Resources:      resources,
-		})
+			State:          dc.Status.State,
+			Servers:        buildServerSummaries(dc.Status.ServerStatus, cloudProviders),
+		}
+		if dc.Status.ErrorMessage != nil {
+			summary.ErrorMessage = *dc.Status.ErrorMessage
+		}
+		if !dc.Status.LastSyncTime.IsZero() {
+			summary.LastSyncTime = new(dc.Status.LastSyncTime)
+		}
+
+		out = append(out, summary)
 	}
 
 	slices.SortFunc(out, func(a, b configSummary) int {
@@ -97,206 +65,116 @@ func newDiscoverySummary(configs []*discoveryconfig.DiscoveryConfig, cloudProvid
 	return out
 }
 
-func addAWSResources(resources map[resourceKey]*resourceSummary, dc *discoveryconfig.DiscoveryConfig, configStatus configStatus) {
-	for _, matcher := range dc.Spec.AWS {
-		for _, matcherType := range matcher.Types {
-			desc := describeAWSResource(matcherType)
-			counts := desc.lookupCounts(dc.Status.IntegrationDiscoveredResources[matcher.Integration])
-			resource := ensureResource(resources, configStatus, cloudAWS, desc.displayName, matcher.Integration, desc.supportsCounts, counts)
-			addResourceScope(resource, matcher.Regions, nil, nil, matcher.Tags)
+func buildServerSummaries(status map[string]*discoveryconfig.DiscoveryStatusServer, cloudProviders cloudProviderConfig) []serverSummary {
+	servers := make([]serverSummary, 0, len(status))
+	for serverID, serverStatus := range status {
+		server := serverSummary{
+			ServerID: serverID,
+		}
+		if serverStatus != nil && serverStatus.DiscoveryStatusServer != nil {
+			if pollInterval := serverStatus.GetPollInterval(); pollInterval != nil {
+				server.PollInterval = pollInterval.AsDuration().String()
+			}
+			if lastUpdate := serverStatus.GetLastUpdate(); lastUpdate != nil {
+				server.LastUpdate = new(lastUpdate.AsTime())
+			}
+			server.Integrations = buildIntegrationSummaries(serverStatus.GetIntegrationSummaries(), cloudProviders)
+		}
+		servers = append(servers, server)
+	}
+
+	slices.SortFunc(servers, func(a, b serverSummary) int {
+		return cmp.Compare(a.ServerID, b.ServerID)
+	})
+	return servers
+}
+
+func buildIntegrationSummaries(status map[string]*discoveryconfigv1.DiscoverSummary, cloudProviders cloudProviderConfig) []integrationSummary {
+	integrations := make([]integrationSummary, 0, len(status))
+	for integrationName, summary := range status {
+		integrations = append(integrations, integrationSummary{
+			Integration: integrationName,
+			Resources:   buildResourceResults(summary, cloudProviders),
+		})
+	}
+
+	slices.SortFunc(integrations, func(a, b integrationSummary) int {
+		return cmp.Compare(a.Integration, b.Integration)
+	})
+	return integrations
+}
+
+func buildResourceResults(summary *discoveryconfigv1.DiscoverSummary, cloudProviders cloudProviderConfig) []resourceResult {
+	resources := make([]resourceResult, 0, len(resourceBuckets))
+	for _, bucket := range resourceBuckets {
+		if bucket.cloud == cloudAWS && !cloudProviders.aws {
+			continue
+		}
+		if bucket.cloud == cloudAzure && !cloudProviders.azure {
+			continue
+		}
+
+		resourceSummary := bucket.summary(summary)
+		if resourceSummary == nil || resourceSummary.GetPrevious() == nil {
+			continue
+		}
+		resources = append(resources, newResourceResult(bucket.kind, resourceSummary.GetPrevious()))
+	}
+
+	slices.SortFunc(resources, func(a, b resourceResult) int {
+		return cmp.Compare(resourceKindRank(a.Kind), resourceKindRank(b.Kind))
+	})
+	return resources
+}
+
+func newResourceResult(kind string, summary *discoveryconfigv1.ResourcesDiscoveredSummary) resourceResult {
+	result := resourceResult{
+		Kind:     kind,
+		Found:    summary.GetFound(),
+		Enrolled: summary.GetEnrolled(),
+		Failed:   summary.GetFailed(),
+	}
+	if syncStart := summary.GetSyncStart(); syncStart != nil {
+		result.SyncStart = new(syncStart.AsTime())
+	}
+	if syncEnd := summary.GetSyncEnd(); syncEnd != nil {
+		result.SyncEnd = new(syncEnd.AsTime())
+	}
+	return result
+}
+
+func resourceKindRank(kind string) int {
+	for _, bucket := range resourceBuckets {
+		if bucket.kind == kind {
+			return bucket.sortRank
 		}
 	}
+	return len(resourceBuckets)
 }
 
-func addAzureResources(resources map[resourceKey]*resourceSummary, dc *discoveryconfig.DiscoveryConfig, configStatus configStatus) {
-	for _, matcher := range dc.Spec.Azure {
-		for _, matcherType := range matcher.Types {
-			desc := describeAzureResource(matcherType)
-			counts := desc.lookupCounts(dc.Status.IntegrationDiscoveredResources[matcher.Integration])
-			resource := ensureResource(resources, configStatus, cloudAzure, desc.displayName, matcher.Integration, desc.supportsCounts, counts)
-			addResourceScope(resource, matcher.Regions, matcher.Subscriptions, matcher.ResourceGroups, matcher.ResourceTags)
-		}
-	}
-}
-
-// ensureResource returns the resource summary for the given grouping, creating
-// it on first sight. Resource counts are resolved once, at creation, and are
-// identical for every matcher that maps to the same resource; later matchers
-// only contribute scope via addResourceScope.
-func ensureResource(resources map[resourceKey]*resourceSummary, configStatus configStatus, cloud, resourceType, integration string, supportsCounts bool, counts *discoveryconfigv1.ResourcesDiscoveredSummary) *resourceSummary {
-	key := resourceKey{
-		cloud:        cloud,
-		resourceType: resourceType,
-		integration:  integration,
-	}
-	if resource := resources[key]; resource != nil {
-		return resource
-	}
-
-	result, lastSync := resolveSummaryResult(configStatus.Reported, supportsCounts, counts)
-	resource := &resourceSummary{
-		Cloud:        cloud,
-		ResourceType: resourceType,
-		Source:       summarySource(integration),
-		Integration:  integration,
-		LastSync:     lastSync,
-		Result:       result,
-	}
-	resources[key] = resource
-	return resource
-}
-
-func summarizeConfigStatus(status discoveryconfig.Status) configStatus {
-	out := configStatus{
-		Reported: hasConfigStatus(status),
-		State:    summaryStatusNotReporting,
-	}
-	isError := false
-	if !status.LastSyncTime.IsZero() {
-		out.LastRun = new(status.LastSyncTime)
-	}
-	if status.ErrorMessage != nil {
-		out.ErrorMessage = *status.ErrorMessage
-		isError = true
-	}
-
-	if !out.Reported {
-		return out
-	}
-	if isError {
-		out.State = "error"
-		return out
-	}
-
-	switch status.State {
-	case discoveryconfigv1.DiscoveryConfigState_DISCOVERY_CONFIG_STATE_ERROR.String():
-		out.State = "error"
-	case discoveryconfigv1.DiscoveryConfigState_DISCOVERY_CONFIG_STATE_SYNCING.String():
-		out.State = "syncing"
-	case discoveryconfigv1.DiscoveryConfigState_DISCOVERY_CONFIG_STATE_RUNNING.String():
-		out.State = "healthy"
-	default:
-		out.State = "reported"
-	}
-	return out
-}
-
-func hasConfigStatus(status discoveryconfig.Status) bool {
-	return (status.State != "" &&
-		status.State != discoveryconfigv1.DiscoveryConfigState_DISCOVERY_CONFIG_STATE_UNSPECIFIED.String()) ||
-		status.ErrorMessage != nil ||
-		!status.LastSyncTime.IsZero() ||
-		len(status.IntegrationDiscoveredResources) > 0 ||
-		len(status.ServerStatus) > 0
-}
-
-func addResourceScope(resource *resourceSummary, regions, subscriptions, resourceGroups []string, tags types.Labels) {
-	scope := newResourceScope(regions, subscriptions, resourceGroups, tags)
-	if !slices.ContainsFunc(resource.Scopes, func(existing resourceScope) bool {
-		return resourceScopesEqual(existing, scope)
-	}) {
-		resource.Scopes = append(resource.Scopes, scope)
-	}
-}
-
-func newResourceScope(regions, subscriptions, resourceGroups []string, tags types.Labels) resourceScope {
-	scope := resourceScope{
-		Regions:        appendUnique(nil, regions...),
-		Subscriptions:  appendUnique(nil, subscriptions...),
-		ResourceGroups: appendUnique(nil, resourceGroups...),
-		MatchTags:      appendUnique(nil, formatMatchTags(tags)),
-	}
-	slices.Sort(scope.Regions)
-	slices.Sort(scope.Subscriptions)
-	slices.Sort(scope.ResourceGroups)
-	slices.Sort(scope.MatchTags)
-	return scope
-}
-
-func resourceScopesEqual(a, b resourceScope) bool {
-	return slices.Equal(a.Regions, b.Regions) &&
-		slices.Equal(a.Subscriptions, b.Subscriptions) &&
-		slices.Equal(a.ResourceGroups, b.ResourceGroups) &&
-		slices.Equal(a.MatchTags, b.MatchTags)
-}
-
-func resolveSummaryResult(reported bool, supportsCounts bool, counts *discoveryconfigv1.ResourcesDiscoveredSummary) (resultSummary, *time.Time) {
-	switch {
-	case !reported && counts == nil:
-		return resultSummary{
-			Kind:    resultKindNotReporting,
-			Message: resultMessageNotReporting,
-		}, nil
-	case !supportsCounts:
-		return resultSummary{
-			Kind:    resultKindUnsupported,
-			Message: resultMessageUnsupported,
-		}, nil
-	case counts == nil:
-		return resultSummary{
-			Kind:    resultKindNoResourceStatus,
-			Message: resultMessageNoResourceStatus,
-		}, nil
-	default:
-		return resultSummary{
-			Kind: resultKindCounts,
-			Counts: &resultCounts{
-				Found:    counts.GetFound(),
-				Enrolled: counts.GetEnrolled(),
-				Failed:   counts.GetFailed(),
-			},
-		}, resourceSummarySyncTime(counts)
-	}
-}
-
-func summarySource(integration string) string {
-	if integration == "" {
-		return "ambient_credentials"
-	}
-	return "integration"
-}
-
-func resourceSummarySyncTime(counts *discoveryconfigv1.ResourcesDiscoveredSummary) *time.Time {
-	switch {
-	case counts.GetSyncEnd() != nil:
-		return new(counts.GetSyncEnd().AsTime())
-	case counts.GetSyncStart() != nil:
-		return new(counts.GetSyncStart().AsTime())
-	default:
-		return nil
-	}
-}
-
-func formatMatchTags(labels types.Labels) string {
-	if matchAllLabels(labels) {
-		return "all"
-	}
-
-	parts := make([]string, 0, len(labels))
-	for _, key := range slices.Sorted(maps.Keys(labels)) {
-		parts = append(parts, formatMatchTag(key, labels[key]))
-	}
-	return strings.Join(parts, ", ")
-}
-
-func matchAllLabels(labels types.Labels) bool {
-	if len(labels) == 0 {
-		return true
-	}
-	values, ok := labels[types.Wildcard]
-	return ok && len(labels) == 1 && slices.Equal([]string(values), []string{types.Wildcard})
-}
-
-func formatMatchTag(key string, values []string) string {
-	values = slices.Clone(values)
-	slices.Sort(values)
-
-	switch len(values) {
-	case 0:
-		return key
-	case 1:
-		return key + "=" + values[0]
-	default:
-		return key + " in (" + strings.Join(values, ", ") + ")"
-	}
+var resourceBuckets = []resourceBucket{
+	{
+		kind:     resourceKindAWSEC2,
+		cloud:    cloudAWS,
+		summary:  func(s *discoveryconfigv1.DiscoverSummary) *discoveryconfigv1.ResourceSummary { return s.GetAwsEc2() },
+		sortRank: 0,
+	},
+	{
+		kind:     resourceKindAWSRDS,
+		cloud:    cloudAWS,
+		summary:  func(s *discoveryconfigv1.DiscoverSummary) *discoveryconfigv1.ResourceSummary { return s.GetAwsRds() },
+		sortRank: 1,
+	},
+	{
+		kind:     resourceKindAWSEKS,
+		cloud:    cloudAWS,
+		summary:  func(s *discoveryconfigv1.DiscoverSummary) *discoveryconfigv1.ResourceSummary { return s.GetAwsEks() },
+		sortRank: 2,
+	},
+	{
+		kind:     resourceKindAzureVM,
+		cloud:    cloudAzure,
+		summary:  func(s *discoveryconfigv1.DiscoverSummary) *discoveryconfigv1.ResourceSummary { return s.GetAzureVms() },
+		sortRank: 3,
+	},
 }

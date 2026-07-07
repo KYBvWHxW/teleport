@@ -18,584 +18,177 @@ package discovery
 
 import (
 	"bytes"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/types/known/durationpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	discoveryconfigv1 "github.com/gravitational/teleport/api/gen/proto/go/teleport/discoveryconfig/v1"
-	"github.com/gravitational/teleport/api/types"
 	"github.com/gravitational/teleport/api/types/discoveryconfig"
 	"github.com/gravitational/teleport/api/types/header"
 	"github.com/gravitational/teleport/lib/utils"
 )
 
-func TestBuildDiscoveryTextSummariesFromConfigs(t *testing.T) {
-	t.Parallel()
-
-	lastRun := time.Date(2026, 1, 15, 11, 58, 0, 0, time.UTC)
-	awsConfig, err := discoveryconfig.NewDiscoveryConfig(
-		header.Metadata{Name: "aws-config"},
-		discoveryconfig.Spec{
-			DiscoveryGroup: "prod",
-			AWS: []types.AWSMatcher{
-				{
-					Types:       []string{types.AWSMatcherEC2},
-					Regions:     []string{"eu-west-1"},
-					Integration: "aws-prod",
-					Tags:        types.Labels{"env": {"prod"}},
-					Params: &types.InstallerParams{
-						EnrollMode: types.InstallParamEnrollMode_INSTALL_PARAM_ENROLL_MODE_SCRIPT,
-					},
-				},
-				{
-					Types:       []string{types.AWSMatcherEC2},
-					Regions:     []string{"eu-west-2"},
-					Integration: "aws-prod",
-					Tags:        types.Labels{"env": {"staging"}},
-					Params: &types.InstallerParams{
-						EnrollMode: types.InstallParamEnrollMode_INSTALL_PARAM_ENROLL_MODE_SCRIPT,
-					},
-				},
-			},
-		},
-	)
-	require.NoError(t, err)
-	awsConfig.Status = discoveryconfig.Status{
-		State:        discoveryconfigv1.DiscoveryConfigState_DISCOVERY_CONFIG_STATE_RUNNING.String(),
-		LastSyncTime: lastRun,
-		IntegrationDiscoveredResources: map[string]*discoveryconfig.IntegrationDiscoveredSummary{
-			"aws-prod": {
-				IntegrationDiscoveredSummary: discoveryconfigv1.IntegrationDiscoveredSummary_builder{
-					AwsEc2: discoveryResourcesSummary(10, 8, 2, lastRun),
-				}.Build(),
-			},
-		},
-	}
-
-	azureConfig, err := discoveryconfig.NewDiscoveryConfig(
-		header.Metadata{Name: "azure-config"},
-		discoveryconfig.Spec{
-			DiscoveryGroup: "prod",
-			Azure: []types.AzureMatcher{
-				{
-					Types:          []string{types.AzureMatcherVM},
-					Regions:        []string{"eastus"},
-					Subscriptions:  []string{"sub-1"},
-					ResourceGroups: []string{"rg-1"},
-					ResourceTags:   types.Labels{types.Wildcard: {types.Wildcard}},
-				},
-			},
-		},
-	)
-	require.NoError(t, err)
-
-	summaries := newDiscoverySummary(
-		[]*discoveryconfig.DiscoveryConfig{awsConfig, azureConfig},
-		cloudProviderConfig{aws: true, azure: true},
-	)
-	require.Len(t, summaries, 2)
-
-	awsConfigSummary := requireConfigSummary(t, summaries, "aws-config")
-	require.Equal(t, "prod", awsConfigSummary.DiscoveryGroup)
-	require.Equal(t, "healthy", awsConfigSummary.Status.State)
-	require.NotNil(t, awsConfigSummary.Status.LastRun)
-	require.Equal(t, lastRun, *awsConfigSummary.Status.LastRun)
-	awsResource := requireResourceSummary(t, awsConfigSummary.Resources, cloudAWS, "EC2", "aws-prod")
-	require.Equal(t, "counts", awsResource.Result.Kind)
-	require.Equal(t, &resultCounts{
-		Found:    10,
-		Enrolled: 8,
-		Failed:   2,
-	}, awsResource.Result.Counts)
-	require.Equal(t, []resourceScope{
-		{
-			Regions:   []string{"eu-west-1"},
-			MatchTags: []string{"env=prod"},
-		},
-		{
-			Regions:   []string{"eu-west-2"},
-			MatchTags: []string{"env=staging"},
-		},
-	}, awsResource.Scopes)
-	require.NotNil(t, awsResource.LastSync)
-	require.Equal(t, lastRun, *awsResource.LastSync)
-
-	azureConfigSummary := requireConfigSummary(t, summaries, "azure-config")
-	require.Equal(t, "prod", azureConfigSummary.DiscoveryGroup)
-	require.Equal(t, summaryStatusNotReporting, azureConfigSummary.Status.State)
-	require.Nil(t, azureConfigSummary.Status.LastRun)
-	azureResource := requireResourceSummary(t, azureConfigSummary.Resources, cloudAzure, "VM", "")
-	require.Equal(t, "not_reporting", azureResource.Result.Kind)
-	require.Equal(t, []resourceScope{
-		{
-			Regions:        []string{"eastus"},
-			Subscriptions:  []string{"sub-1"},
-			ResourceGroups: []string{"rg-1"},
-			MatchTags:      []string{"all"},
-		},
-	}, azureResource.Scopes)
-	require.Nil(t, azureResource.LastSync)
-
-	structured := summaries
-	require.Len(t, structured, 2)
-
-	awsStructured := requireConfigSummary(t, structured, "aws-config")
-	require.Equal(t, "prod", awsStructured.DiscoveryGroup)
-	require.Equal(t, "healthy", awsStructured.Status.State)
-	require.NotNil(t, awsStructured.Status.LastRun)
-	require.Equal(t, lastRun, *awsStructured.Status.LastRun)
-	require.Len(t, awsStructured.Resources, 1)
-	require.Equal(t, cloudAWS, awsStructured.Resources[0].Cloud)
-	require.Equal(t, "EC2", awsStructured.Resources[0].ResourceType)
-	require.Equal(t, "integration", awsStructured.Resources[0].Source)
-	require.Equal(t, "aws-prod", awsStructured.Resources[0].Integration)
-	require.Equal(t, []resourceScope{
-		{
-			Regions:   []string{"eu-west-1"},
-			MatchTags: []string{"env=prod"},
-		},
-		{
-			Regions:   []string{"eu-west-2"},
-			MatchTags: []string{"env=staging"},
-		},
-	}, awsStructured.Resources[0].Scopes)
-	require.Equal(t, resultSummary{
-		Kind: "counts",
-		Counts: &resultCounts{
-			Found:    10,
-			Enrolled: 8,
-			Failed:   2,
-		},
-	}, awsStructured.Resources[0].Result)
-
-	azureStructured := requireConfigSummary(t, structured, "azure-config")
-	require.Equal(t, summaryStatusNotReporting, azureStructured.Status.State)
-	require.Nil(t, azureStructured.Status.LastRun)
-	require.Len(t, azureStructured.Resources, 1)
-	require.Equal(t, "ambient_credentials", azureStructured.Resources[0].Source)
-	require.Empty(t, azureStructured.Resources[0].Integration)
-	require.Equal(t, []resourceScope{
-		{
-			Regions:        []string{"eastus"},
-			Subscriptions:  []string{"sub-1"},
-			ResourceGroups: []string{"rg-1"},
-			MatchTags:      []string{"all"},
-		},
-	}, azureStructured.Resources[0].Scopes)
-	require.Equal(t, "not_reporting", azureStructured.Resources[0].Result.Kind)
-	require.Equal(t, "no status reported by a Discovery Service", azureStructured.Resources[0].Result.Message)
-}
-
-func TestBuildDiscoveryTextSummariesFromConfigsGlobalErrorWithMultipleScopes(t *testing.T) {
+func TestBuildDiscoverySummaryFromServerStatus(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 1, 15, 12, 0, 0, 0, time.UTC)
-	lastRun := now.Add(-5 * time.Minute)
-	errorMessage := "AccessDenied: missing ec2:DescribeInstances permission"
-	awsConfig, err := discoveryconfig.NewDiscoveryConfig(
-		header.Metadata{Name: "aws-config"},
-		discoveryconfig.Spec{
-			DiscoveryGroup: "prod",
-			AWS: []types.AWSMatcher{
-				{
-					Types:       []string{types.AWSMatcherEC2},
-					Regions:     []string{"eu-west-1"},
-					Integration: "aws-prod",
-					Tags:        types.Labels{"env": {"prod"}},
-					Params: &types.InstallerParams{
-						EnrollMode: types.InstallParamEnrollMode_INSTALL_PARAM_ENROLL_MODE_SCRIPT,
-					},
-				},
-				{
-					Types:       []string{types.AWSMatcherEC2},
-					Regions:     []string{"eu-west-2"},
-					Integration: "aws-prod",
-					Tags:        types.Labels{"env": {"staging"}},
-					Params: &types.InstallerParams{
-						EnrollMode: types.InstallParamEnrollMode_INSTALL_PARAM_ENROLL_MODE_SCRIPT,
-					},
-				},
-			},
+	multiConfig := newTestDiscoveryConfig(t, "multi-config", "prod")
+	multiConfig.Status = discoveryconfig.Status{
+		State:        discoveryconfigv1.DiscoveryConfigState_DISCOVERY_CONFIG_STATE_RUNNING.String(),
+		LastSyncTime: now.Add(-2 * time.Minute),
+		ServerStatus: map[string]*discoveryconfig.DiscoveryStatusServer{
+			"server-b": testServerStatus(now.Add(-3*time.Minute), 10*time.Minute, map[string]*discoveryconfigv1.DiscoverSummary{
+				"": testDiscoverSummary(
+					withPreviousRDS(discoveryResourcesSummary(3, 2, 1, now.Add(-5*time.Minute), now.Add(-4*time.Minute))),
+					withPreviousAzureVM(discoveryResourcesSummary(7, 6, 1, now.Add(-4*time.Minute), now.Add(-3*time.Minute))),
+				),
+				"azure-prod": testDiscoverSummary(
+					withPreviousAzureVM(discoveryResourcesSummary(4, 4, 0, now.Add(-3*time.Minute), now.Add(-2*time.Minute))),
+				),
+			}),
+			"server-a": testServerStatus(now.Add(-time.Minute), 5*time.Minute, map[string]*discoveryconfigv1.DiscoverSummary{
+				"": testDiscoverSummary(
+					withPreviousEC2(discoveryResourcesSummary(10, 8, 2, now.Add(-5*time.Minute), now.Add(-4*time.Minute-time.Second))),
+					withPreviousRDS(discoveryResourcesSummary(5, 4, 1, now.Add(-4*time.Minute), now.Add(-3*time.Minute-time.Second))),
+				),
+				"aws-prod": testDiscoverSummary(
+					withPreviousEC2(discoveryResourcesSummary(8, 7, 1, now.Add(-3*time.Minute), now.Add(-2*time.Minute-time.Second))),
+					withCurrentEKS(discoveryResourcesSummary(99, 0, 0, now.Add(-time.Minute), now)),
+					withPreviousRDS(discoveryResourcesSummary(6, 6, 0, now.Add(-2*time.Minute), now.Add(-time.Minute-time.Second))),
+				),
+			}),
 		},
-	)
-	require.NoError(t, err)
-	awsConfig.Status = discoveryconfig.Status{
+	}
+
+	errorMessage := "AccessDenied: missing ec2:DescribeInstances permission"
+	noServiceConfig := newTestDiscoveryConfig(t, "empty-config", "prod")
+	noServiceConfig.Status = discoveryconfig.Status{
 		State:        discoveryconfigv1.DiscoveryConfigState_DISCOVERY_CONFIG_STATE_ERROR.String(),
-		LastSyncTime: lastRun,
+		LastSyncTime: now.Add(-5 * time.Minute),
 		ErrorMessage: &errorMessage,
 	}
 
 	summaries := newDiscoverySummary(
-		[]*discoveryconfig.DiscoveryConfig{awsConfig},
-		cloudProviderConfig{aws: true},
+		[]*discoveryconfig.DiscoveryConfig{multiConfig, noServiceConfig},
+		cloudProviderConfig{aws: true, azure: true},
 	)
-	require.Len(t, summaries, 1)
+	require.Len(t, summaries, 2)
 
-	awsConfigSummary := requireConfigSummary(t, summaries, "aws-config")
-	require.Equal(t, "error", awsConfigSummary.Status.State)
-	require.Equal(t, errorMessage, awsConfigSummary.Status.ErrorMessage)
-	require.NotNil(t, awsConfigSummary.Status.LastRun)
-	require.Equal(t, lastRun, *awsConfigSummary.Status.LastRun)
-	require.Len(t, awsConfigSummary.Resources, 1)
-	awsResource := requireResourceSummary(t, awsConfigSummary.Resources, cloudAWS, "EC2", "aws-prod")
-	require.Equal(t, "no_resource_status", awsResource.Result.Kind)
-	require.Equal(t, []resourceScope{
-		{
-			Regions:   []string{"eu-west-1"},
-			MatchTags: []string{"env=prod"},
-		},
-		{
-			Regions:   []string{"eu-west-2"},
-			MatchTags: []string{"env=staging"},
-		},
-	}, awsResource.Scopes)
+	emptySummary := requireConfigSummary(t, summaries, "empty-config")
+	require.Equal(t, "prod", emptySummary.DiscoveryGroup)
+	require.Equal(t, discoveryconfigv1.DiscoveryConfigState_DISCOVERY_CONFIG_STATE_ERROR.String(), emptySummary.State)
+	require.Equal(t, errorMessage, emptySummary.ErrorMessage)
+	require.NotNil(t, emptySummary.LastSyncTime)
+	require.Equal(t, now.Add(-5*time.Minute), *emptySummary.LastSyncTime)
+	require.Empty(t, emptySummary.Servers)
 
-	var buf bytes.Buffer
-	require.NoError(t, summaries.renderText(&buf, now))
-	out := buf.String()
-	requireNoTrailingWhitespace(t, out)
-	require.Equal(t, 1, strings.Count(out, "Discovery config status"))
-	require.Equal(t, 1, strings.Count(out, errorMessage))
-	require.Contains(t, out, "Status:          error")
-	require.Contains(t, out, "Last run:        5 minutes ago")
-	require.Contains(t, out, "Last run:        5 minutes ago\nError:")
-	require.Contains(t, out, errorMessage+"\n\nAWS EC2 discovery")
-	require.Contains(t, out, "Matcher scopes:")
-	require.Contains(t, out, "- Regions: eu-west-1; Match tags: env=prod")
-	require.Contains(t, out, "- Regions: eu-west-2; Match tags: env=staging")
-	require.Contains(t, out, "Result:         no resource status reported for this discovery target")
+	multiSummary := requireConfigSummary(t, summaries, "multi-config")
+	require.Equal(t, discoveryconfigv1.DiscoveryConfigState_DISCOVERY_CONFIG_STATE_RUNNING.String(), multiSummary.State)
+	require.NotNil(t, multiSummary.LastSyncTime)
+	require.Equal(t, now.Add(-2*time.Minute), *multiSummary.LastSyncTime)
+	require.Len(t, multiSummary.Servers, 2)
+	require.Equal(t, "server-a", multiSummary.Servers[0].ServerID)
+	require.Equal(t, "server-b", multiSummary.Servers[1].ServerID)
+	require.Equal(t, "5m0s", multiSummary.Servers[0].PollInterval)
+	require.NotNil(t, multiSummary.Servers[0].LastUpdate)
+	require.Equal(t, now.Add(-time.Minute), *multiSummary.Servers[0].LastUpdate)
+
+	serverA := multiSummary.Servers[0]
+	require.Len(t, serverA.Integrations, 2)
+	require.Empty(t, serverA.Integrations[0].Integration)
+	require.Equal(t, "aws-prod", serverA.Integrations[1].Integration)
+	require.Equal(t, []string{resourceKindAWSEC2, resourceKindAWSRDS}, resourceKinds(serverA.Integrations[0].Resources))
+	require.Equal(t, []string{resourceKindAWSEC2, resourceKindAWSRDS}, resourceKinds(serverA.Integrations[1].Resources), "current-only EKS bucket must be skipped")
+	require.Equal(t, resourceResult{
+		Kind:      resourceKindAWSEC2,
+		Found:     10,
+		Enrolled:  8,
+		Failed:    2,
+		SyncStart: new(now.Add(-5 * time.Minute)),
+		SyncEnd:   new(now.Add(-4*time.Minute - time.Second)),
+	}, serverA.Integrations[0].Resources[0])
+
+	serverB := multiSummary.Servers[1]
+	require.Len(t, serverB.Integrations, 2)
+	require.Empty(t, serverB.Integrations[0].Integration)
+	require.Equal(t, "azure-prod", serverB.Integrations[1].Integration)
+	require.Equal(t, []string{resourceKindAWSRDS, resourceKindAzureVM}, resourceKinds(serverB.Integrations[0].Resources))
+	require.Equal(t, []string{resourceKindAzureVM}, resourceKinds(serverB.Integrations[1].Resources))
 }
 
-func TestRenderSummaryTextGroupsMultipleResourcesByConfig(t *testing.T) {
+func TestBuildDiscoverySummaryCloudFilter(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 1, 15, 12, 0, 0, 0, time.UTC)
-	lastRun := now.Add(-2 * time.Minute)
-	awsConfig, err := discoveryconfig.NewDiscoveryConfig(
-		header.Metadata{Name: "aws-config"},
-		discoveryconfig.Spec{
-			DiscoveryGroup: "prod",
-			AWS: []types.AWSMatcher{
-				{
-					Types:       []string{types.AWSMatcherEC2},
-					Regions:     []string{"eu-west-1"},
-					Integration: "aws-prod",
-					Tags:        types.Labels{"env": {"prod"}},
-					Params: &types.InstallerParams{
-						EnrollMode: types.InstallParamEnrollMode_INSTALL_PARAM_ENROLL_MODE_SCRIPT,
-					},
-				},
-				{
-					Types:       []string{types.AWSMatcherRDS},
-					Regions:     []string{"eu-west-1"},
-					Integration: "aws-prod",
-					Tags:        types.Labels{"env": {"prod"}},
-				},
-			},
-		},
-	)
-	require.NoError(t, err)
-	awsConfig.Status = discoveryconfig.Status{
-		State:        discoveryconfigv1.DiscoveryConfigState_DISCOVERY_CONFIG_STATE_RUNNING.String(),
-		LastSyncTime: lastRun,
-		IntegrationDiscoveredResources: map[string]*discoveryconfig.IntegrationDiscoveredSummary{
-			"aws-prod": {
-				IntegrationDiscoveredSummary: discoveryconfigv1.IntegrationDiscoveredSummary_builder{
-					AwsEc2: discoveryResourcesSummary(10, 8, 2, lastRun),
-					AwsRds: discoveryResourcesSummary(5, 4, 1, lastRun),
-				}.Build(),
-			},
+	config := newTestDiscoveryConfig(t, "multi-cloud", "prod")
+	config.Status = discoveryconfig.Status{
+		State: discoveryconfigv1.DiscoveryConfigState_DISCOVERY_CONFIG_STATE_RUNNING.String(),
+		ServerStatus: map[string]*discoveryconfig.DiscoveryStatusServer{
+			"server-a": testServerStatus(now, time.Minute, map[string]*discoveryconfigv1.DiscoverSummary{
+				"": testDiscoverSummary(
+					withPreviousEC2(discoveryResourcesSummary(10, 8, 2, now.Add(-time.Minute), now)),
+					withPreviousAzureVM(discoveryResourcesSummary(7, 6, 1, now.Add(-time.Minute), now)),
+				),
+			}),
 		},
 	}
 
-	summaries := newDiscoverySummary(
-		[]*discoveryconfig.DiscoveryConfig{awsConfig},
-		cloudProviderConfig{aws: true},
-	)
-	require.Len(t, summaries, 1)
-	awsConfigSummary := requireConfigSummary(t, summaries, "aws-config")
-	require.Len(t, awsConfigSummary.Resources, 2)
-	requireResourceSummary(t, awsConfigSummary.Resources, cloudAWS, "EC2", "aws-prod")
-	requireResourceSummary(t, awsConfigSummary.Resources, cloudAWS, "database", "aws-prod")
+	awsSummary := newDiscoverySummary([]*discoveryconfig.DiscoveryConfig{config}, cloudProviderConfig{aws: true})
+	require.Equal(t, []string{resourceKindAWSEC2}, resourceKinds(awsSummary[0].Servers[0].Integrations[0].Resources))
 
-	var buf bytes.Buffer
-	require.NoError(t, summaries.renderText(&buf, now))
-	out := buf.String()
-	requireNoTrailingWhitespace(t, out)
-	require.Equal(t, 1, strings.Count(out, "Discovery config status"))
-	require.Contains(t, out, "AWS EC2 discovery")
-	require.Contains(t, out, "10 found, 8 enrolled, 2 failed")
-	require.Contains(t, out, "10 found, 8 enrolled, 2 failed\n\nAWS database discovery")
-	require.Contains(t, out, "AWS database discovery")
-	require.Contains(t, out, "5 found, 4 enrolled, 1 failed")
-}
-
-func TestSummarizeConfigStatus(t *testing.T) {
-	t.Parallel()
-
-	lastRun := time.Date(2026, 1, 15, 11, 58, 0, 0, time.UTC)
-	errorMessage := "AccessDenied: missing ec2:DescribeInstances permission"
-
-	tests := []struct {
-		name   string
-		status discoveryconfig.Status
-		want   configStatus
-	}{
-		{
-			name:   "empty status is not reporting",
-			status: discoveryconfig.Status{},
-			want: configStatus{
-				State: summaryStatusNotReporting,
-			},
-		},
-		{
-			name: "unspecified state is not reporting",
-			status: discoveryconfig.Status{
-				State: discoveryconfigv1.DiscoveryConfigState_DISCOVERY_CONFIG_STATE_UNSPECIFIED.String(),
-			},
-			want: configStatus{
-				State: summaryStatusNotReporting,
-			},
-		},
-		{
-			name: "last sync time reports status",
-			status: discoveryconfig.Status{
-				LastSyncTime: lastRun,
-			},
-			want: configStatus{
-				Reported: true,
-				State:    "reported",
-				LastRun:  &lastRun,
-			},
-		},
-		{
-			name: "integration resources report status",
-			status: discoveryconfig.Status{
-				IntegrationDiscoveredResources: map[string]*discoveryconfig.IntegrationDiscoveredSummary{
-					"aws-prod": nil,
-				},
-			},
-			want: configStatus{
-				Reported: true,
-				State:    "reported",
-			},
-		},
-		{
-			name: "running state is healthy",
-			status: discoveryconfig.Status{
-				State: discoveryconfigv1.DiscoveryConfigState_DISCOVERY_CONFIG_STATE_RUNNING.String(),
-			},
-			want: configStatus{
-				Reported: true,
-				State:    "healthy",
-			},
-		},
-		{
-			name: "syncing state is syncing",
-			status: discoveryconfig.Status{
-				State: discoveryconfigv1.DiscoveryConfigState_DISCOVERY_CONFIG_STATE_SYNCING.String(),
-			},
-			want: configStatus{
-				Reported: true,
-				State:    "syncing",
-			},
-		},
-		{
-			name: "error state is error",
-			status: discoveryconfig.Status{
-				State: discoveryconfigv1.DiscoveryConfigState_DISCOVERY_CONFIG_STATE_ERROR.String(),
-			},
-			want: configStatus{
-				Reported: true,
-				State:    "error",
-			},
-		},
-		{
-			name: "error message is error",
-			status: discoveryconfig.Status{
-				State:        discoveryconfigv1.DiscoveryConfigState_DISCOVERY_CONFIG_STATE_RUNNING.String(),
-				ErrorMessage: &errorMessage,
-			},
-			want: configStatus{
-				Reported:     true,
-				State:        "error",
-				ErrorMessage: errorMessage,
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got := summarizeConfigStatus(tt.status)
-			require.Equal(t, tt.want.Reported, got.Reported)
-			require.Equal(t, tt.want.State, got.State)
-			require.Equal(t, tt.want.ErrorMessage, got.ErrorMessage)
-			if tt.want.LastRun == nil {
-				require.Nil(t, got.LastRun)
-				return
-			}
-			require.NotNil(t, got.LastRun)
-			require.Equal(t, *tt.want.LastRun, *got.LastRun)
-		})
-	}
-}
-
-func TestResolveSummaryResult(t *testing.T) {
-	t.Parallel()
-
-	lastRun := time.Date(2026, 1, 15, 11, 58, 0, 0, time.UTC)
-	errorMessage := "AccessDenied: missing ec2:DescribeInstances permission"
-
-	tests := []struct {
-		name        string
-		status      configStatus
-		supports    bool
-		counts      *discoveryconfigv1.ResourcesDiscoveredSummary
-		want        resultSummary
-		wantLastRun *time.Time
-	}{
-		{
-			name: "error status does not override resource counts",
-			status: configStatus{
-				Reported:     true,
-				ErrorMessage: errorMessage,
-			},
-			supports: true,
-			counts:   discoveryResourcesSummary(10, 8, 2, lastRun),
-			want: resultSummary{
-				Kind: "counts",
-				Counts: &resultCounts{
-					Found:    10,
-					Enrolled: 8,
-					Failed:   2,
-				},
-			},
-			wantLastRun: &lastRun,
-		},
-		{
-			name:     "no reported status",
-			supports: true,
-			want: resultSummary{
-				Kind:    "not_reporting",
-				Message: "no status reported by a Discovery Service",
-			},
-		},
-		{
-			name: "reported unsupported resource",
-			status: configStatus{
-				Reported: true,
-			},
-			want: resultSummary{
-				Kind:    "unsupported",
-				Message: "detailed counts are not available for this resource type",
-			},
-		},
-		{
-			name: "reported supported resource without resource status",
-			status: configStatus{
-				Reported: true,
-			},
-			supports: true,
-			want: resultSummary{
-				Kind:    "no_resource_status",
-				Message: "no resource status reported for this discovery target",
-			},
-		},
-		{
-			name: "reported counts",
-			status: configStatus{
-				Reported: true,
-			},
-			supports: true,
-			counts:   discoveryResourcesSummary(10, 8, 2, lastRun),
-			want: resultSummary{
-				Kind: "counts",
-				Counts: &resultCounts{
-					Found:    10,
-					Enrolled: 8,
-					Failed:   2,
-				},
-			},
-			wantLastRun: &lastRun,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			got, lastRun := resolveSummaryResult(tt.status.Reported, tt.supports, tt.counts)
-			require.Equal(t, tt.want, got)
-			if tt.wantLastRun == nil {
-				require.Nil(t, lastRun)
-				return
-			}
-			require.NotNil(t, lastRun)
-			require.Equal(t, *tt.wantLastRun, *lastRun)
-		})
-	}
+	azureSummary := newDiscoverySummary([]*discoveryconfig.DiscoveryConfig{config}, cloudProviderConfig{azure: true})
+	require.Equal(t, []string{resourceKindAzureVM}, resourceKinds(azureSummary[0].Servers[0].Integrations[0].Resources))
 }
 
 func TestConfigSummaryStructuredOutputGolden(t *testing.T) {
 	t.Parallel()
 
 	lastRun := time.Date(2026, 1, 15, 11, 58, 0, 0, time.UTC)
-	errorRun := time.Date(2026, 1, 15, 12, 1, 0, 0, time.UTC)
-	summaries := []configSummary{
+	lastUpdate := time.Date(2026, 1, 15, 11, 59, 0, 0, time.UTC)
+	syncStart := time.Date(2026, 1, 15, 11, 55, 0, 0, time.UTC)
+	syncEnd := time.Date(2026, 1, 15, 11, 56, 0, 0, time.UTC)
+	errorRun := time.Date(2026, 1, 15, 11, 55, 0, 0, time.UTC)
+
+	summaries := discoverySummary{
 		{
 			Name:           "healthy-config",
 			DiscoveryGroup: "prod",
-			Status: configStatus{
-				Reported: true,
-				State:    "healthy",
-				LastRun:  &lastRun,
-			},
-			Resources: []resourceSummary{
+			State:          discoveryconfigv1.DiscoveryConfigState_DISCOVERY_CONFIG_STATE_RUNNING.String(),
+			LastSyncTime:   &lastRun,
+			Servers: []serverSummary{
 				{
-					Cloud:        cloudAWS,
-					ResourceType: "EC2",
-					Source:       "integration",
-					Integration:  "aws-prod",
-					Scopes: []resourceScope{
+					ServerID:     "server-a",
+					PollInterval: "5m0s",
+					LastUpdate:   &lastUpdate,
+					Integrations: []integrationSummary{
 						{
-							Regions:   []string{"eu-west-1"},
-							MatchTags: []string{"env=prod"},
+							Resources: []resourceResult{
+								{
+									Kind:      resourceKindAWSEC2,
+									Found:     10,
+									Enrolled:  8,
+									Failed:    2,
+									SyncStart: &syncStart,
+									SyncEnd:   &syncEnd,
+								},
+							},
 						},
 						{
-							Regions:   []string{"eu-west-2"},
-							MatchTags: []string{"env=staging"},
+							Integration: "aws-prod",
+							Resources: []resourceResult{
+								{
+									Kind:      resourceKindAWSRDS,
+									Found:     5,
+									Enrolled:  4,
+									Failed:    1,
+									SyncStart: &syncStart,
+									SyncEnd:   &syncEnd,
+								},
+							},
 						},
-					},
-					LastSync: &lastRun,
-					Result: resultSummary{
-						Kind: "counts",
-						Counts: &resultCounts{
-							Found:    10,
-							Enrolled: 8,
-							Failed:   2,
-						},
-					},
-				},
-				{
-					Cloud:        cloudAzure,
-					ResourceType: "VM",
-					Source:       "ambient_credentials",
-					Scopes: []resourceScope{
-						{
-							Regions:        []string{"eastus"},
-							Subscriptions:  []string{"sub-1"},
-							ResourceGroups: []string{"rg-1"},
-							MatchTags:      []string{"all"},
-						},
-					},
-					Result: resultSummary{
-						Kind:    "not_reporting",
-						Message: "no status reported by a Discovery Service",
 					},
 				},
 			},
@@ -603,30 +196,9 @@ func TestConfigSummaryStructuredOutputGolden(t *testing.T) {
 		{
 			Name:           "error-config",
 			DiscoveryGroup: "prod",
-			Status: configStatus{
-				Reported:     true,
-				State:        "error",
-				LastRun:      &errorRun,
-				ErrorMessage: "AccessDenied: missing ec2:DescribeInstances permission",
-			},
-			Resources: []resourceSummary{
-				{
-					Cloud:        cloudAWS,
-					ResourceType: "database",
-					Source:       "integration",
-					Integration:  "aws-prod",
-					Scopes: []resourceScope{
-						{
-							Regions:   []string{"eu-west-1"},
-							MatchTags: []string{"env=prod"},
-						},
-					},
-					Result: resultSummary{
-						Kind:    "no_resource_status",
-						Message: "no resource status reported for this discovery target",
-					},
-				},
-			},
+			State:          discoveryconfigv1.DiscoveryConfigState_DISCOVERY_CONFIG_STATE_ERROR.String(),
+			ErrorMessage:   "AccessDenied: missing ec2:DescribeInstances permission",
+			LastSyncTime:   &errorRun,
 		},
 	}
 
@@ -636,101 +208,49 @@ func TestConfigSummaryStructuredOutputGolden(t *testing.T) {
     {
         "name": "healthy-config",
         "discovery_group": "prod",
-        "status": {
-            "state": "healthy",
-            "last_run": "2026-01-15T11:58:00Z"
-        },
-        "resources": [
+        "state": "DISCOVERY_CONFIG_STATE_RUNNING",
+        "last_sync_time": "2026-01-15T11:58:00Z",
+        "servers": [
             {
-                "cloud": "AWS",
-                "resource_type": "EC2",
-                "source": "integration",
-                "integration": "aws-prod",
-                "scopes": [
+                "server_id": "server-a",
+                "poll_interval": "5m0s",
+                "last_update": "2026-01-15T11:59:00Z",
+                "integrations": [
                     {
-                        "regions": [
-                            "eu-west-1"
-                        ],
-                        "match_tags": [
-                            "env=prod"
+                        "resources": [
+                            {
+                                "kind": "AWS EC2",
+                                "found": 10,
+                                "enrolled": 8,
+                                "failed": 2,
+                                "sync_start": "2026-01-15T11:55:00Z",
+                                "sync_end": "2026-01-15T11:56:00Z"
+                            }
                         ]
                     },
                     {
-                        "regions": [
-                            "eu-west-2"
-                        ],
-                        "match_tags": [
-                            "env=staging"
+                        "integration": "aws-prod",
+                        "resources": [
+                            {
+                                "kind": "AWS RDS",
+                                "found": 5,
+                                "enrolled": 4,
+                                "failed": 1,
+                                "sync_start": "2026-01-15T11:55:00Z",
+                                "sync_end": "2026-01-15T11:56:00Z"
+                            }
                         ]
                     }
-                ],
-                "last_resource_sync": "2026-01-15T11:58:00Z",
-                "result": {
-                    "kind": "counts",
-                    "counts": {
-                        "found": 10,
-                        "enrolled": 8,
-                        "failed": 2
-                    }
-                }
-            },
-            {
-                "cloud": "Azure",
-                "resource_type": "VM",
-                "source": "ambient_credentials",
-                "scopes": [
-                    {
-                        "regions": [
-                            "eastus"
-                        ],
-                        "subscriptions": [
-                            "sub-1"
-                        ],
-                        "resource_groups": [
-                            "rg-1"
-                        ],
-                        "match_tags": [
-                            "all"
-                        ]
-                    }
-                ],
-                "result": {
-                    "kind": "not_reporting",
-                    "message": "no status reported by a Discovery Service"
-                }
+                ]
             }
         ]
     },
     {
         "name": "error-config",
         "discovery_group": "prod",
-        "status": {
-            "state": "error",
-            "last_run": "2026-01-15T12:01:00Z",
-            "error_message": "AccessDenied: missing ec2:DescribeInstances permission"
-        },
-        "resources": [
-            {
-                "cloud": "AWS",
-                "resource_type": "database",
-                "source": "integration",
-                "integration": "aws-prod",
-                "scopes": [
-                    {
-                        "regions": [
-                            "eu-west-1"
-                        ],
-                        "match_tags": [
-                            "env=prod"
-                        ]
-                    }
-                ],
-                "result": {
-                    "kind": "no_resource_status",
-                    "message": "no resource status reported for this discovery target"
-                }
-            }
-        ]
+        "state": "DISCOVERY_CONFIG_STATE_ERROR",
+        "error_message": "AccessDenied: missing ec2:DescribeInstances permission",
+        "last_sync_time": "2026-01-15T11:55:00Z"
     }
 ]
 `, jsonBuf.String())
@@ -738,134 +258,107 @@ func TestConfigSummaryStructuredOutputGolden(t *testing.T) {
 	var yamlBuf bytes.Buffer
 	require.NoError(t, utils.WriteYAML(&yamlBuf, summaries))
 	require.Equal(t, `discovery_group: prod
+last_sync_time: "2026-01-15T11:58:00Z"
 name: healthy-config
-resources:
-- cloud: AWS
-  integration: aws-prod
-  last_resource_sync: "2026-01-15T11:58:00Z"
-  resource_type: EC2
-  result:
-    counts:
-      enrolled: 8
+servers:
+- integrations:
+  - resources:
+    - enrolled: 8
       failed: 2
       found: 10
-    kind: counts
-  scopes:
-  - match_tags:
-    - env=prod
-    regions:
-    - eu-west-1
-  - match_tags:
-    - env=staging
-    regions:
-    - eu-west-2
-  source: integration
-- cloud: Azure
-  resource_type: VM
-  result:
-    kind: not_reporting
-    message: no status reported by a Discovery Service
-  scopes:
-  - match_tags:
-    - all
-    regions:
-    - eastus
-    resource_groups:
-    - rg-1
-    subscriptions:
-    - sub-1
-  source: ambient_credentials
-status:
-  last_run: "2026-01-15T11:58:00Z"
-  state: healthy
+      kind: AWS EC2
+      sync_end: "2026-01-15T11:56:00Z"
+      sync_start: "2026-01-15T11:55:00Z"
+  - integration: aws-prod
+    resources:
+    - enrolled: 4
+      failed: 1
+      found: 5
+      kind: AWS RDS
+      sync_end: "2026-01-15T11:56:00Z"
+      sync_start: "2026-01-15T11:55:00Z"
+  last_update: "2026-01-15T11:59:00Z"
+  poll_interval: 5m0s
+  server_id: server-a
+state: DISCOVERY_CONFIG_STATE_RUNNING
 ---
 discovery_group: prod
+error_message: 'AccessDenied: missing ec2:DescribeInstances permission'
+last_sync_time: "2026-01-15T11:55:00Z"
 name: error-config
-resources:
-- cloud: AWS
-  integration: aws-prod
-  resource_type: database
-  result:
-    kind: no_resource_status
-    message: no resource status reported for this discovery target
-  scopes:
-  - match_tags:
-    - env=prod
-    regions:
-    - eu-west-1
-  source: integration
-status:
-  error_message: 'AccessDenied: missing ec2:DescribeInstances permission'
-  last_run: "2026-01-15T12:01:00Z"
-  state: error
+state: DISCOVERY_CONFIG_STATE_ERROR
 `, yamlBuf.String())
 }
 
-func TestFormatMatchTags(t *testing.T) {
-	t.Parallel()
+func newTestDiscoveryConfig(t *testing.T, name, discoveryGroup string) *discoveryconfig.DiscoveryConfig {
+	t.Helper()
 
-	tests := []struct {
-		name   string
-		labels types.Labels
-		want   string
-	}{
-		{
-			name: "empty labels match all",
-			want: "all",
-		},
-		{
-			name: "wildcard labels match all",
-			labels: types.Labels{
-				types.Wildcard: {types.Wildcard},
-			},
-			want: "all",
-		},
-		{
-			name: "single value",
-			labels: types.Labels{
-				"env": {"prod"},
-			},
-			want: "env=prod",
-		},
-		{
-			name: "multiple values are sorted",
-			labels: types.Labels{
-				"env": {"staging", "prod"},
-			},
-			want: "env in (prod, staging)",
-		},
-		{
-			name: "keys are sorted",
-			labels: types.Labels{
-				"team": {"platform"},
-				"env":  {"prod"},
-			},
-			want: "env=prod, team=platform",
-		},
-		{
-			name: "key with no values",
-			labels: types.Labels{
-				"env": nil,
-			},
-			want: "env",
-		},
-	}
+	dc, err := discoveryconfig.NewDiscoveryConfig(
+		header.Metadata{Name: name},
+		discoveryconfig.Spec{DiscoveryGroup: discoveryGroup},
+	)
+	require.NoError(t, err)
+	return dc
+}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			require.Equal(t, tt.want, formatMatchTags(tt.labels))
-		})
+func testServerStatus(lastUpdate time.Time, pollInterval time.Duration, integrationSummaries map[string]*discoveryconfigv1.DiscoverSummary) *discoveryconfig.DiscoveryStatusServer {
+	return &discoveryconfig.DiscoveryStatusServer{
+		DiscoveryStatusServer: discoveryconfigv1.DiscoveryStatusServer_builder{
+			LastUpdate:           timestamppb.New(lastUpdate),
+			PollInterval:         durationpb.New(pollInterval),
+			IntegrationSummaries: integrationSummaries,
+		}.Build(),
 	}
 }
 
-func discoveryResourcesSummary(found, enrolled, failed uint64, syncEnd time.Time) *discoveryconfigv1.ResourcesDiscoveredSummary {
+type discoverSummaryOption func(*discoveryconfigv1.DiscoverSummary_builder)
+
+func testDiscoverSummary(opts ...discoverSummaryOption) *discoveryconfigv1.DiscoverSummary {
+	builder := discoveryconfigv1.DiscoverSummary_builder{}
+	for _, opt := range opts {
+		opt(&builder)
+	}
+	return builder.Build()
+}
+
+func withPreviousEC2(summary *discoveryconfigv1.ResourcesDiscoveredSummary) discoverSummaryOption {
+	return func(builder *discoveryconfigv1.DiscoverSummary_builder) {
+		builder.AwsEc2 = testResourceSummary(summary, nil)
+	}
+}
+
+func withPreviousRDS(summary *discoveryconfigv1.ResourcesDiscoveredSummary) discoverSummaryOption {
+	return func(builder *discoveryconfigv1.DiscoverSummary_builder) {
+		builder.AwsRds = testResourceSummary(summary, nil)
+	}
+}
+
+func withPreviousAzureVM(summary *discoveryconfigv1.ResourcesDiscoveredSummary) discoverSummaryOption {
+	return func(builder *discoveryconfigv1.DiscoverSummary_builder) {
+		builder.AzureVms = testResourceSummary(summary, nil)
+	}
+}
+
+func withCurrentEKS(summary *discoveryconfigv1.ResourcesDiscoveredSummary) discoverSummaryOption {
+	return func(builder *discoveryconfigv1.DiscoverSummary_builder) {
+		builder.AwsEks = testResourceSummary(nil, summary)
+	}
+}
+
+func testResourceSummary(previous, current *discoveryconfigv1.ResourcesDiscoveredSummary) *discoveryconfigv1.ResourceSummary {
+	return discoveryconfigv1.ResourceSummary_builder{
+		Previous: previous,
+		Current:  current,
+	}.Build()
+}
+
+func discoveryResourcesSummary(found, enrolled, failed uint64, syncStart, syncEnd time.Time) *discoveryconfigv1.ResourcesDiscoveredSummary {
 	return discoveryconfigv1.ResourcesDiscoveredSummary_builder{
-		Found:    found,
-		Enrolled: enrolled,
-		Failed:   failed,
-		SyncEnd:  timestamppb.New(syncEnd),
+		Found:     found,
+		Enrolled:  enrolled,
+		Failed:    failed,
+		SyncStart: timestamppb.New(syncStart),
+		SyncEnd:   timestamppb.New(syncEnd),
 	}.Build()
 }
 
@@ -880,13 +373,10 @@ func requireConfigSummary(t *testing.T, summaries discoverySummary, name string)
 	return configSummary{}
 }
 
-func requireResourceSummary(t *testing.T, resources []resourceSummary, cloud, resourceType, integration string) resourceSummary {
-	t.Helper()
+func resourceKinds(resources []resourceResult) []string {
+	kinds := make([]string, 0, len(resources))
 	for _, resource := range resources {
-		if resource.Cloud == cloud && resource.ResourceType == resourceType && resource.Integration == integration {
-			return resource
-		}
+		kinds = append(kinds, resource.Kind)
 	}
-	require.FailNowf(t, "resource summary not found", "cloud=%q resource_type=%q integration=%q", cloud, resourceType, integration)
-	return resourceSummary{}
+	return kinds
 }

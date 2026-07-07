@@ -25,9 +25,9 @@ import (
 
 	"github.com/dustin/go-humanize"
 	"github.com/gravitational/trace"
-
-	"github.com/gravitational/teleport/lib/asciitable"
 )
+
+const discoveryServiceSetupDocsURL = "https://goteleport.com/docs/reference/deployment/config/#discovery-service"
 
 func (s discoverySummary) renderText(w io.Writer, now time.Time) error {
 	if len(s) == 0 {
@@ -48,131 +48,138 @@ func (s discoverySummary) renderText(w io.Writer, now time.Time) error {
 		if err := config.writeText(w, now); err != nil {
 			return trace.Wrap(err)
 		}
-		for _, resource := range config.Resources {
-			if _, err := fmt.Fprintln(w); err != nil {
-				return trace.Wrap(err)
-			}
-			if err := resource.writeText(w, now); err != nil {
-				return trace.Wrap(err)
-			}
-		}
 	}
 
 	return nil
 }
 
 func (c configSummary) writeText(w io.Writer, now time.Time) error {
-	if _, err := fmt.Fprintln(w, "Discovery config status"); err != nil {
+	if err := writeSummaryLine(w, "Discovery config %s:", c.Name); err != nil {
 		return trace.Wrap(err)
 	}
-
-	table := asciitable.MakeHeadlessTable(2)
-	if c.Name != "" {
-		table.AddRow([]string{"Config:", c.Name})
-	}
-	if c.DiscoveryGroup != "" {
-		table.AddRow([]string{"Discovery group:", c.DiscoveryGroup})
-	}
-	table.AddRow([]string{"Status:", c.Status.State})
-	table.AddRow([]string{"Last run:", formatSummaryLastRun(c.Status.LastRun, now)})
-	if c.Status.ErrorMessage != "" {
-		table.AddRow([]string{"Error:", c.Status.ErrorMessage})
-	}
-	return trace.Wrap(writeSummaryTable(w, table))
-}
-
-func (r resourceSummary) writeText(w io.Writer, now time.Time) error {
-	if _, err := fmt.Fprintf(w, "%s %s discovery\n", r.Cloud, r.ResourceType); err != nil {
+	if err := writeSummaryLine(w, "  Discovery group: %s", c.DiscoveryGroup); err != nil {
 		return trace.Wrap(err)
 	}
-
-	table := asciitable.MakeHeadlessTable(2)
-	table.AddRow([]string{"Source:", formatSummarySource(r)})
-	r.addScopeRows(&table)
-	if r.LastSync != nil {
-		table.AddRow([]string{"Last resource sync:", formatSummaryLastRun(r.LastSync, now)})
-	}
-	table.AddRow([]string{"Result:", formatSummaryResult(r.Result)})
-	return trace.Wrap(writeSummaryTable(w, table))
-}
-
-func writeSummaryTable(w io.Writer, table asciitable.Table) error {
-	var b strings.Builder
-	if err := table.WriteTo(&b); err != nil {
+	if err := writeSummaryLine(w, "  Status: %s", formatSummaryState(c.State)); err != nil {
 		return trace.Wrap(err)
 	}
-	for _, line := range strings.Split(strings.TrimSuffix(b.String(), "\n"), "\n") {
-		if _, err := fmt.Fprintln(w, strings.TrimRight(line, " ")); err != nil {
+	if c.LastSyncTime != nil {
+		if err := writeSummaryLine(w, "  Last run: %s", formatSummaryLastRun(c.LastSyncTime, now)); err != nil {
+			return trace.Wrap(err)
+		}
+	}
+	if c.ErrorMessage != "" {
+		if err := writeSummaryLine(w, "  Error: %s", c.ErrorMessage); err != nil {
+			return trace.Wrap(err)
+		}
+	}
+	if len(c.Servers) == 0 {
+		return trace.Wrap(writeSummaryLine(w, "  No Discovery Services running for %s. See %s.", c.DiscoveryGroup, discoveryServiceSetupDocsURL))
+	}
+	if _, err := fmt.Fprintln(w); err != nil {
+		return trace.Wrap(err)
+	}
+	for _, server := range c.Servers {
+		if err := server.writeText(w, now); err != nil {
 			return trace.Wrap(err)
 		}
 	}
 	return nil
 }
 
-func (r resourceSummary) addScopeRows(table *asciitable.Table) {
-	if len(r.Scopes) == 1 {
-		addSingleScopeRows(table, r.Scopes[0])
-		return
+func (s serverSummary) writeText(w io.Writer, now time.Time) error {
+	if err := writeSummaryLine(w, "  Service (%s):", s.ServerID); err != nil {
+		return trace.Wrap(err)
 	}
-
-	for i, scope := range r.Scopes {
-		label := ""
-		if i == 0 {
-			label = "Matcher scopes:"
+	if s.PollInterval != "" {
+		if err := writeSummaryLine(w, "    Poll interval: %s", formatPollInterval(s.PollInterval)); err != nil {
+			return trace.Wrap(err)
 		}
-		table.AddRow([]string{label, "- " + formatSummaryScope(scope)})
+	}
+	if s.LastUpdate != nil {
+		if err := writeSummaryLine(w, "    Last update: %s", formatSummaryLastRun(s.LastUpdate, now)); err != nil {
+			return trace.Wrap(err)
+		}
+	}
+	for _, integration := range s.Integrations {
+		if err := integration.writeText(w, now); err != nil {
+			return trace.Wrap(err)
+		}
+	}
+	return nil
+}
+
+func (i integrationSummary) writeText(w io.Writer, now time.Time) error {
+	if err := writeSummaryLine(w, "    %s:", formatIntegrationName(i.Integration)); err != nil {
+		return trace.Wrap(err)
+	}
+	for _, resource := range i.Resources {
+		if err := resource.writeText(w, now); err != nil {
+			return trace.Wrap(err)
+		}
+	}
+	return nil
+}
+
+func (r resourceResult) writeText(w io.Writer, now time.Time) error {
+	if err := writeSummaryLine(w, "      %s discovery:", r.Kind); err != nil {
+		return trace.Wrap(err)
+	}
+	if err := writeSummaryLine(w, "        Previous sync: %s%s", formatSummaryLastRun(r.SyncEnd, now), formatSyncDuration(r.SyncStart, r.SyncEnd)); err != nil {
+		return trace.Wrap(err)
+	}
+	return trace.Wrap(writeSummaryLine(w, "        Result: %s", formatResourceResult(r)))
+}
+
+func writeSummaryLine(w io.Writer, format string, args ...any) error {
+	line := fmt.Sprintf(format, args...)
+	_, err := fmt.Fprintln(w, strings.TrimRight(line, " "))
+	return trace.Wrap(err)
+}
+
+func formatSummaryState(state string) string {
+	switch state {
+	case "", "DISCOVERY_CONFIG_STATE_UNSPECIFIED":
+		return summaryStatusNotReporting
+	case "DISCOVERY_CONFIG_STATE_ERROR":
+		return "error"
+	case "DISCOVERY_CONFIG_STATE_SYNCING":
+		return "syncing"
+	case "DISCOVERY_CONFIG_STATE_RUNNING":
+		return "healthy"
+	default:
+		return state
 	}
 }
 
-func addSingleScopeRows(table *asciitable.Table, scope resourceScope) {
-	table.AddRow([]string{"Regions:", formatSummaryList(scope.Regions)})
-	if len(scope.Subscriptions) > 0 {
-		table.AddRow([]string{"Subscriptions:", formatSummaryList(scope.Subscriptions)})
-	}
-	if len(scope.ResourceGroups) > 0 {
-		table.AddRow([]string{"Resource groups:", formatSummaryList(scope.ResourceGroups)})
-	}
-	table.AddRow([]string{"Match tags:", formatSummaryList(scope.MatchTags)})
-}
-
-func formatSummaryScope(scope resourceScope) string {
-	parts := []string{"Regions: " + formatSummaryList(scope.Regions)}
-	if len(scope.Subscriptions) > 0 {
-		parts = append(parts, "Subscriptions: "+formatSummaryList(scope.Subscriptions))
-	}
-	if len(scope.ResourceGroups) > 0 {
-		parts = append(parts, "Resource groups: "+formatSummaryList(scope.ResourceGroups))
-	}
-	parts = append(parts, "Match tags: "+formatSummaryList(scope.MatchTags))
-	return strings.Join(parts, "; ")
-}
-
-func formatSummarySource(resource resourceSummary) string {
-	if resource.Source == "ambient_credentials" || resource.Integration == "" {
+func formatIntegrationName(integration string) string {
+	if integration == "" {
 		return "ambient credentials"
 	}
-	return "integration " + resource.Integration
+	return integration
 }
 
-func formatSummaryResult(result resultSummary) string {
-	if result.Counts == nil {
-		return result.Message
+func formatPollInterval(pollInterval string) string {
+	duration, err := time.ParseDuration(pollInterval)
+	if err != nil {
+		return pollInterval
 	}
+	return strings.TrimSpace(humanize.RelTime(time.Time{}, time.Time{}.Add(duration), "", ""))
+}
+
+func formatSyncDuration(start, end *time.Time) string {
+	if start == nil || end == nil {
+		return ""
+	}
+	return " (took " + end.Sub(*start).String() + ")"
+}
+
+func formatResourceResult(result resourceResult) string {
 	return strings.Join([]string{
-		strconv.FormatUint(result.Counts.Found, 10) + " found",
-		strconv.FormatUint(result.Counts.Enrolled, 10) + " enrolled",
-		strconv.FormatUint(result.Counts.Failed, 10) + " failed",
+		strconv.FormatUint(result.Found, 10) + " found",
+		strconv.FormatUint(result.Enrolled, 10) + " enrolled",
+		strconv.FormatUint(result.Failed, 10) + " failed",
 	}, ", ")
-}
-
-func formatSummaryList(values []string) string {
-	if len(values) == 0 {
-		return "not specified"
-	}
-	if len(values) == 1 && values[0] == "*" {
-		return "all"
-	}
-	return strings.Join(values, ", ")
 }
 
 func formatSummaryLastRun(t *time.Time, now time.Time) string {

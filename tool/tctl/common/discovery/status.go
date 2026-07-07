@@ -17,65 +17,37 @@
 package discovery
 
 import (
-	"slices"
 	"time"
 )
 
-// discoverySummary is directly serializable because configSummary already
-// carries the stable JSON/YAML output contract.
 type discoverySummary []configSummary
 
 type configSummary struct {
-	Name           string            `json:"name" yaml:"name"`
-	DiscoveryGroup string            `json:"discovery_group" yaml:"discovery_group"`
-	Status         configStatus      `json:"status" yaml:"status"`
-	Resources      []resourceSummary `json:"resources" yaml:"resources"`
+	Name           string          `json:"name" yaml:"name"`
+	DiscoveryGroup string          `json:"discovery_group" yaml:"discovery_group"`
+	State          string          `json:"state" yaml:"state"`
+	ErrorMessage   string          `json:"error_message,omitempty" yaml:"error_message,omitempty"`
+	LastSyncTime   *time.Time      `json:"last_sync_time,omitempty" yaml:"last_sync_time,omitempty"`
+	Servers        []serverSummary `json:"servers,omitempty" yaml:"servers,omitempty"`
 }
 
-type configStatus struct {
-	Reported     bool       `json:"-" yaml:"-"`
-	State        string     `json:"state" yaml:"state"`
-	LastRun      *time.Time `json:"last_run,omitempty" yaml:"last_run,omitempty"`
-	ErrorMessage string     `json:"error_message,omitempty" yaml:"error_message,omitempty"`
+type serverSummary struct {
+	ServerID     string               `json:"server_id" yaml:"server_id"`
+	PollInterval string               `json:"poll_interval,omitempty" yaml:"poll_interval,omitempty"`
+	LastUpdate   *time.Time           `json:"last_update,omitempty" yaml:"last_update,omitempty"`
+	Integrations []integrationSummary `json:"integrations,omitempty" yaml:"integrations,omitempty"`
 }
 
-// resourceSummary is a single rendered resource section: one
-// cloud/resource-type/integration grouping for a discovery config.
-type resourceSummary struct {
-	Cloud        string          `json:"cloud" yaml:"cloud"`
-	ResourceType string          `json:"resource_type" yaml:"resource_type"`
-	Source       string          `json:"source" yaml:"source"`
-	Integration  string          `json:"integration,omitempty" yaml:"integration,omitempty"`
-	Scopes       []resourceScope `json:"scopes,omitempty" yaml:"scopes,omitempty"`
-	LastSync     *time.Time      `json:"last_resource_sync,omitempty" yaml:"last_resource_sync,omitempty"`
-	Result       resultSummary   `json:"result" yaml:"result"`
+type integrationSummary struct {
+	Integration string           `json:"integration,omitempty" yaml:"integration,omitempty"`
+	Resources   []resourceResult `json:"resources,omitempty" yaml:"resources,omitempty"`
 }
 
-type resourceScope struct {
-	Regions        []string `json:"regions,omitempty" yaml:"regions,omitempty"`
-	Subscriptions  []string `json:"subscriptions,omitempty" yaml:"subscriptions,omitempty"`
-	ResourceGroups []string `json:"resource_groups,omitempty" yaml:"resource_groups,omitempty"`
-	MatchTags      []string `json:"match_tags,omitempty" yaml:"match_tags,omitempty"`
-}
-
-type resultSummary struct {
-	Kind    string        `json:"kind" yaml:"kind"`
-	Counts  *resultCounts `json:"counts,omitempty" yaml:"counts,omitempty"`
-	Message string        `json:"message,omitempty" yaml:"message,omitempty"`
-}
-
-type resultCounts struct {
-	Found    uint64 `json:"found" yaml:"found"`
-	Enrolled uint64 `json:"enrolled" yaml:"enrolled"`
-	Failed   uint64 `json:"failed" yaml:"failed"`
-}
-
-func appendUnique(dst []string, values ...string) []string {
-	for _, value := range values {
-		if value == "" || slices.Contains(dst, value) {
-			continue
-		}
-		dst = append(dst, value)
-	}
-	return dst
+type resourceResult struct {
+	Kind      string     `json:"kind" yaml:"kind"`
+	Found     uint64     `json:"found" yaml:"found"`
+	Enrolled  uint64     `json:"enrolled" yaml:"enrolled"`
+	Failed    uint64     `json:"failed" yaml:"failed"`
+	SyncStart *time.Time `json:"sync_start,omitempty" yaml:"sync_start,omitempty"`
+	SyncEnd   *time.Time `json:"sync_end,omitempty" yaml:"sync_end,omitempty"`
 }
