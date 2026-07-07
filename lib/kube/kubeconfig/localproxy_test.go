@@ -250,3 +250,66 @@ func TestLocalProxy(t *testing.T) {
 		require.Empty(t, cmp.Diff(wantConfig, *generatedConfig, kubeconfigCmpOpts...))
 	})
 }
+
+// TestCreateLocalProxyConfigStripsForeignExecEntries checks that
+// a `tsh kube credentials` exec entry belonging to a *different* proxy is stripped
+// from the generated local proxy kubeconfig (so it stays self-contained),
+// while non-Teleport exec plugins are left untouched.
+func TestCreateLocalProxyConfigStripsForeignExecEntries(t *testing.T) {
+	const (
+		curCluster   = "root-cluster"
+		curProxyHost = "root-cluster.example.com"
+		curKubeAddr  = "https://root-cluster.example.com"
+
+		foreignCluster  = "other-cluster"
+		foreignProxy    = "other-cluster.example.com:443"
+		foreignKubeAddr = "https://other-cluster.example.com"
+		foreignKubeCtx  = "other-cluster-kubeX"
+	)
+
+	kubeconfigPath, _ := setup(t)
+	creds, _, err := genUserKeyRing("localhost")
+	require.NoError(t, err)
+
+	// Simulate `tsh kube login` against a *different* proxy.
+	// This writes an exec-plugin entry that CreateLocalProxyConfig must strip.
+	require.NoError(t, Update(kubeconfigPath, Values{
+		TeleportClusterName: foreignCluster,
+		ClusterAddr:         foreignKubeAddr,
+		KubeClusters:        []string{"kubeX"},
+		Credentials:         creds,
+		Exec:                &ExecValues{TshBinaryPath: "/path/to/tsh"},
+		ProxyAddr:           foreignProxy,
+	}, false))
+
+	configWithForeign, err := Load(kubeconfigPath)
+	require.NoError(t, err)
+	require.NotNil(t, configWithForeign.AuthInfos[foreignKubeCtx].Exec, "sanity: foreign exec entry should exist")
+
+	newConfig, err := CreateLocalProxyConfig(configWithForeign, &LocalProxyValues{
+		LocalProxyCAs:           map[string][]byte{curCluster: []byte("CAData")},
+		TeleportProfileName:     curProxyHost,
+		TeleportKubeClusterAddr: curKubeAddr,
+		LocalProxyURL:           "http://localhost:12345",
+		ClientKeyData:           []byte("clientKeyData"),
+		Clusters: LocalProxyClusters{{
+			TeleportCluster: curCluster,
+			KubeCluster:     "kube1",
+		}},
+	})
+	require.NoError(t, err)
+
+	// The foreign Teleport exec entry must be gone.
+	require.NotContains(t, newConfig.AuthInfos, foreignKubeCtx)
+	require.NotContains(t, newConfig.Contexts, foreignKubeCtx)
+	require.NotContains(t, newConfig.Clusters, foreignKubeCtx)
+
+	// Non-Teleport entries from the user's kubeconfig are preserved, including a non-Teleport exec plugin.
+	require.NotNil(t, newConfig.AuthInfos["support"].Exec, "non-Teleport exec plugin should be preserved")
+	require.Contains(t, newConfig.AuthInfos, "developer")
+	require.Contains(t, newConfig.AuthInfos, "admin")
+
+	// The local proxy entry uses static creds, not an exec plugin.
+	require.Contains(t, newConfig.AuthInfos, curCluster+"-kube1")
+	require.Nil(t, newConfig.AuthInfos[curCluster+"-kube1"].Exec)
+}

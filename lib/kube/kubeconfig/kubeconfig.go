@@ -490,6 +490,52 @@ func removeByServerAddr(config *clientcmdapi.Config, serverAddr string) {
 	}
 }
 
+// removeTeleportExecEntries removes all Teleport-managed exec-plugin authinfos (the ones that invoke `tsh kube credentials`),
+// along with the contexts and clusters that reference them, regardless of which profile they belong to.
+//
+// removeByProfileName/removeByServerAddr only strip entries for the current proxy.
+// Any Teleport `tsh kube credentials` exec entry inherited from another profile would survive and
+// route a kubectl request back through the exec plugin, which fails under hardware-key policies.
+// Strip all of them so the local proxy kubeconfig is self-contained.
+//
+// A Teleport exec entry is identified by having an Exec config together with the Teleport cluster-name extension,
+// so non-Teleport exec plugins (e.g. an EKS or GKE auth helper) are left untouched.
+func removeTeleportExecEntries(config *clientcmdapi.Config) {
+	isTeleportExec := func(authInfo *clientcmdapi.AuthInfo) bool {
+		if authInfo == nil || authInfo.Exec == nil {
+			return false
+		}
+		_, ok := getStringExtensionFromAuthInfo(authInfo, extTeleClusterName)
+		return ok
+	}
+
+	for authName, authInfo := range config.AuthInfos {
+		if !isTeleportExec(authInfo) {
+			continue
+		}
+
+		delete(config.AuthInfos, authName)
+
+		for contextName, context := range config.Contexts {
+			if context.AuthInfo != authName {
+				continue
+			}
+
+			delete(config.Clusters, context.Cluster)
+			delete(config.Contexts, contextName)
+		}
+	}
+
+	if config.CurrentContext != "" {
+		if _, ok := config.Contexts[config.CurrentContext]; !ok {
+			// we shouldn't leave a deleted context as the current context,
+			// so we'll try restoring the context that was selected
+			// before we started updating the file or we blank it
+			config.CurrentContext = searchForSelectedCluster(config.Contexts)
+		}
+	}
+}
+
 // Load tries to read a kubeconfig file and if it can't, returns an error.
 // One exception, missing files result in empty configs, not an error.
 func Load(path string) (*clientcmdapi.Config, error) {

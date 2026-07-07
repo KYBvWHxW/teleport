@@ -108,6 +108,7 @@ func CreateLocalProxyConfig(originalKubeConfig *clientcmdapi.Config, localProxyV
 	config.CurrentContext = ""
 	removeByProfileName(config, localProxyValues.TeleportProfileName)
 	removeByServerAddr(config, localProxyValues.TeleportKubeClusterAddr)
+	removeTeleportExecEntries(config)
 
 	for _, cluster := range localProxyValues.Clusters {
 		contextName := ContextName(cluster.TeleportCluster, cluster.KubeCluster)
