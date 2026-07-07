@@ -432,7 +432,8 @@ func (l *Log) insertEvent(ctx context.Context, event apievents.AuditEvent, event
 		return nil
 	}
 
-	if existingMatches != nil && *existingMatches {
+	duplicateAlreadyStored := existingMatches != nil && *existingMatches
+	if duplicateAlreadyStored {
 		writeRequestsDeduped.Inc()
 		return nil
 	}
@@ -447,17 +448,18 @@ func (l *Log) insertEvent(ctx context.Context, event apievents.AuditEvent, event
 	)
 	eventIDCollisions.Inc()
 
-	inserted, _, err = l.tryInsertEvent(ctx, event, newID, sessionID, eventJSON)
+	inserted, existingMatches, err = l.tryInsertEvent(ctx, event, newID, sessionID, eventJSON)
 	if err != nil {
 		return trace.Wrap(err)
 	}
-	if !inserted {
-		return trace.AlreadyExists(
-			"audit event id collision persisted after generating a new id (event_time %v)",
-			event.GetTime().UTC(),
-		)
+	storedOnPriorAttempt := existingMatches != nil && *existingMatches
+	if inserted || storedOnPriorAttempt {
+		return nil
 	}
-	return nil
+	return trace.AlreadyExists(
+		"audit event id collision persisted after generating a new id (event_time %v)",
+		event.GetTime().UTC(),
+	)
 }
 
 func (l *Log) tryInsertEvent(ctx context.Context, event apievents.AuditEvent, eventID, sessionID uuid.UUID, eventJSON string) (bool, *bool, error) {
