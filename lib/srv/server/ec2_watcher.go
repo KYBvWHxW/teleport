@@ -31,8 +31,6 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/aws/arn"
-	"github.com/aws/aws-sdk-go-v2/service/account"
-	accounttypes "github.com/aws/aws-sdk-go-v2/service/account/types"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/gravitational/trace"
@@ -299,9 +297,9 @@ func (e *EC2IAMPermissionError) Unwrap() error {
 	return e.Err
 }
 
-// collectError collects err if it wraps a permission error. Returns
+// collectPermissionError collects err if it wraps a permission error. Returns
 // true if collected, false otherwise.
-func (r *EC2DiscoveryResult) collectError(err error) bool {
+func (r *EC2DiscoveryResult) collectPermissionError(err error) bool {
 	if iamErr, ok := errors.AsType[*EC2IAMPermissionError](err); ok {
 		r.PermissionErrors = append(r.PermissionErrors, iamErr)
 		return true
@@ -310,21 +308,30 @@ func (r *EC2DiscoveryResult) collectError(err error) bool {
 	return false
 }
 
-// HasInstances reports whether any EC2Instances groups were discovered.
+func (r *EC2DiscoveryResult) collectPermissionErrorOrWarn(ctx context.Context, logger *slog.Logger, err error, msg string, args ...any) {
+	if r.collectPermissionError(err) {
+		return
+	}
+
+	args = append(args, "error", err)
+	logger.WarnContext(ctx, msg, args...)
+}
+
+// hasInstances reports whether any EC2Instances groups were discovered.
 // Note: a group may itself have an empty list of Instances.
-func (r *EC2DiscoveryResult) HasInstances() bool {
+func (r *EC2DiscoveryResult) hasInstances() bool {
 	return len(r.Instances) > 0
 }
 
-// HasErrors reports whether any IAM permission errors were collected during discovery.
-func (r *EC2DiscoveryResult) HasErrors() bool {
+// hasErrors reports whether any IAM permission errors were collected during discovery.
+func (r *EC2DiscoveryResult) hasErrors() bool {
 	return len(r.PermissionErrors) > 0
 }
 
-// IsEmpty reports whether no instances were discovered and no IAM
+// isEmpty reports whether no instances were discovered and no IAM
 // permission errors were collected.
-func (r *EC2DiscoveryResult) IsEmpty() bool {
-	return !r.HasInstances() && !r.HasErrors()
+func (r *EC2DiscoveryResult) isEmpty() bool {
+	return !r.hasInstances() && !r.hasErrors()
 }
 
 // accountIDFromRoleARN extracts the AWS account ID from a role ARN,
@@ -346,18 +353,16 @@ func accountIDFromRoleARN(roleARN string) (string, error) {
 	return parsed.AccountID, nil
 }
 
-// accountIDFromRoleARNOrWarn returns the AWS account ID from
-// roleARN when available. If roleARN is non-empty but is invalid
-// (parse failure or missing account ID), a warning is logged and
-// a synthetic account ID is returned. If roleARN is empty (expected
-// when using ambient credentials rather than an explicit
-// assume-role ARN), a synthetic ID is returned without warning.
+// accountIDFromRoleARNOrSynthetic returns the AWS account ID from
+// roleARN when available, or a synthetic account ID otherwise. An
+// empty roleARN is expected when using ambient credentials rather
+// than an explicit assume-role ARN.
 //
 // Synthetic account IDs are deterministic for the same (roleARN,
 // integration, region) scope and are only used for issue
 // grouping/deduplication. They must not be interpreted as real
 // AWS account IDs.
-func accountIDFromRoleARNOrWarn(ctx context.Context, logger *slog.Logger, roleARN, integration, region string) string {
+func accountIDFromRoleARNOrSynthetic(ctx context.Context, logger *slog.Logger, roleARN, integration, region string) string {
 	accountID, err := accountIDFromRoleARN(roleARN)
 	if accountID != "" {
 		return accountID
@@ -365,7 +370,7 @@ func accountIDFromRoleARNOrWarn(ctx context.Context, logger *slog.Logger, roleAR
 	fallbackAccountID := syntheticAccountID(roleARN, integration, region)
 
 	if err != nil {
-		logger.WarnContext(ctx, "Could not parse account ID from assume role ARN; using synthetic account grouping key for EC2 permission reporting",
+		logger.DebugContext(ctx, "Could not parse account ID from assume role ARN; using synthetic account grouping key for EC2 permission reporting",
 			"role_arn", roleARN,
 			"integration", integration,
 			"region", region,
@@ -640,49 +645,25 @@ func (f *ec2InstanceFetcher) matcherRegions(ctx context.Context, params matcherR
 		return f.Matcher.Regions, nil
 	}
 
-	regionsListerClient, err := f.RegionsListerGetter(ctx, params.awsOpts...)
+	regions, err := awsregions.ListEnabledRegions(ctx, f.RegionsListerGetter, params.awsOpts...)
 	if err != nil {
+		if trace.IsAccessDenied(err) {
+			accountID := accountIDFromRoleARNOrSynthetic(ctx, f.Logger, params.assumeRoleARN, f.Matcher.Integration, "")
+			return nil, trace.Wrap(&EC2IAMPermissionError{
+				Integration:         f.Matcher.Integration,
+				IssueType:           usertasks.AutoDiscoverEC2IssuePermAccountDenied,
+				DiscoveryConfigName: f.DiscoveryConfigName,
+				AccountID:           accountID,
+				Err:                 err,
+			})
+		}
 		return nil, trace.Wrap(err)
 	}
 
-	paginator := account.NewListRegionsPaginator(regionsListerClient, &account.ListRegionsInput{
-		RegionOptStatusContains: []accounttypes.RegionOptStatus{
-			accounttypes.RegionOptStatusEnabled,
-			accounttypes.RegionOptStatusEnabledByDefault,
-		},
-	})
-
-	var enabledRegions []string
-	for paginator.HasMorePages() {
-		page, err := paginator.NextPage(ctx)
-		if err != nil {
-			convertedErr := libcloudaws.ConvertRequestFailureError(err)
-			if trace.IsAccessDenied(convertedErr) {
-				accountID := accountIDFromRoleARNOrWarn(ctx, f.Logger, params.assumeRoleARN, f.Matcher.Integration, "")
-				return nil, trace.Wrap(&EC2IAMPermissionError{
-					Integration:         f.Matcher.Integration,
-					IssueType:           usertasks.AutoDiscoverEC2IssuePermAccountDenied,
-					DiscoveryConfigName: f.DiscoveryConfigName,
-					AccountID:           accountID,
-					Err:                 convertedErr,
-				})
-			}
-			return nil, trace.Wrap(convertedErr)
-		}
-
-		for _, region := range page.Regions {
-			enabledRegions = append(enabledRegions, aws.ToString(region.RegionName))
-		}
-	}
-
-	return enabledRegions, nil
+	return regions, nil
 }
 
-type fetchAccountIDsUnderOrganizationParams struct {
-	assumeRoleARN string
-}
-
-func (f *ec2InstanceFetcher) fetchAccountIDsUnderOrganization(ctx context.Context, params fetchAccountIDsUnderOrganizationParams) ([]string, error) {
+func (f *ec2InstanceFetcher) fetchAccountIDsUnderOrganization(ctx context.Context) ([]string, error) {
 	awsOpts := []awsconfig.OptionsFn{
 		awsconfig.WithCredentialsMaybeIntegration(awsconfig.IntegrationMetadata{Name: f.Matcher.Integration}),
 	}
@@ -709,7 +690,7 @@ func (f *ec2InstanceFetcher) fetchAccountIDsUnderOrganization(ctx context.Contex
 	if err != nil {
 		convertedErr := libcloudaws.ConvertRequestFailureError(err)
 		if trace.IsAccessDenied(convertedErr) {
-			accountID := accountIDFromRoleARNOrWarn(ctx, f.Logger, params.assumeRoleARN, f.Matcher.Integration, "")
+			accountID := accountIDFromRoleARNOrSynthetic(ctx, f.Logger, f.Matcher.AssumeRole.RoleARN, f.Matcher.Integration, "")
 			return nil, trace.Wrap(&EC2IAMPermissionError{
 				Integration:         f.Matcher.Integration,
 				IssueType:           usertasks.AutoDiscoverEC2IssuePermOrgDenied,
@@ -751,9 +732,7 @@ func (f *ec2InstanceFetcher) allAssumeRoles(ctx context.Context) ([]assumeRoleWi
 		return nil, trace.BadParameter("assume role name is required when using AWS organization discovery")
 	}
 
-	accountIDs, err := f.fetchAccountIDsUnderOrganization(ctx, fetchAccountIDsUnderOrganizationParams{
-		assumeRoleARN: f.Matcher.AssumeRole.RoleARN,
-	})
+	accountIDs, err := f.fetchAccountIDsUnderOrganization(ctx)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
@@ -789,7 +768,7 @@ func (f *ec2InstanceFetcher) GetInstances(ctx context.Context, rotation bool) ([
 
 	accountRolesToAssume, err := f.allAssumeRoles(ctx)
 	if err != nil {
-		if result.collectError(err) {
+		if result.collectPermissionError(err) {
 			return []*EC2DiscoveryResult{result}, nil
 		}
 		return nil, trace.Wrap(err)
@@ -808,12 +787,8 @@ func (f *ec2InstanceFetcher) GetInstances(ctx context.Context, rotation bool) ([
 			assumeRoleARN: assumeRole.RoleARN,
 		})
 		if err != nil {
-			if result.collectError(err) {
-				continue
-			}
-			f.Logger.WarnContext(ctx, "Failed to get regions for EC2 discovery",
+			result.collectPermissionErrorOrWarn(ctx, f.Logger, err, "Failed to get regions for EC2 discovery",
 				"assume_role_arn", assumeRole.RoleARN,
-				"error", err,
 			)
 			continue
 		}
@@ -827,13 +802,9 @@ func (f *ec2InstanceFetcher) GetInstances(ctx context.Context, rotation bool) ([
 				ssmRunParams: ssmRunParams,
 			})
 			if err != nil {
-				if result.collectError(err) {
-					continue
-				}
-				f.Logger.WarnContext(ctx, "Failed to get instances for EC2 discovery",
+				result.collectPermissionErrorOrWarn(ctx, f.Logger, err, "Failed to get instances for EC2 discovery",
 					"region", region,
 					"assume_role_arn", assumeRole.RoleARN,
-					"error", err,
 				)
 				continue
 			}
@@ -842,7 +813,7 @@ func (f *ec2InstanceFetcher) GetInstances(ctx context.Context, rotation bool) ([
 		}
 	}
 
-	if result.IsEmpty() {
+	if result.isEmpty() {
 		return nil, trace.NotFound("no ec2 instances found")
 	}
 
@@ -875,7 +846,7 @@ func (f *ec2InstanceFetcher) getInstancesInRegion(ctx context.Context, params ge
 		if err != nil {
 			convertedErr := libcloudaws.ConvertRequestFailureError(err)
 			if trace.IsAccessDenied(convertedErr) {
-				accountID := accountIDFromRoleARNOrWarn(ctx, f.Logger, params.assumeRole.RoleARN, f.Matcher.Integration, params.region)
+				accountID := accountIDFromRoleARNOrSynthetic(ctx, f.Logger, params.assumeRole.RoleARN, f.Matcher.Integration, params.region)
 				return nil, trace.Wrap(&EC2IAMPermissionError{
 					Integration:         f.Matcher.Integration,
 					Region:              params.region,

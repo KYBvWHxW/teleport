@@ -682,7 +682,6 @@ func (s *Server) initAWSWatchers(matchers []types.AWSMatcher) error {
 						"error", permErr.Err,
 					)
 
-					// This is called every poll, regardless of the suppression logic.
 					s.awsEC2Tasks.addFailedPermissionEnrollment(
 						awsEC2TaskKey{
 							// Intentionally do not include DiscoveryConfigName in the task key. Permission errors are
