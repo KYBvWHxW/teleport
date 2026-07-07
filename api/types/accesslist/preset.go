@@ -38,6 +38,13 @@ const (
 	// auto-created for a preset-backed access list. The full role name
 	// format is "{prefix}-{AccessListPresetRoleInfix}-{accessListUUID}".
 	AccessListPresetRoleInfix = "acl-preset"
+
+	// RoleRequesterPrefix is the role name prefix for a preset-created role
+	// that allows its bearer to make access requests.
+	RoleRequesterPrefix = "requester"
+	// RoleReviewerPrefix is the role name prefix for a preset-created role
+	// that allows its bearer to review access requests.
+	RoleReviewerPrefix = "reviewer"
 )
 
 // PresetType defines the type of access list preset.
