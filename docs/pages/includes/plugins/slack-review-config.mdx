@@ -44,11 +44,11 @@ app_token = "<Var name="xapp-..." />"
 # Allows binding between Teleport username and Slack email.
 # This should only be set to true if `slack_user_id_trait` is not configured in Teleport.
 # We recommend configuring a trait for stronger identity binding. Default is false.
-allow_email_username_match = true
+allow_email_username_match = <Var name="slackEmailUsernameBind" initial="false" />
 
 # Name of the Teleport trait to bind Teleport user and Slack user.
 # The trait should hold value of Slack user ID.
-slack_user_id_trait = ""
+slack_user_id_trait = "<Var name="slack_uid" />"
 
 [role_to_recipients]
 # Map roles to recipients.
@@ -57,7 +57,7 @@ slack_user_id_trait = ""
 # role.suggested_reviewers will automatically be treated as additional email recipients.
 # "*" must be provided to match non-specified roles.
 "*" = "<Var name="access-requests" />"
-"editor" = ["<Var name="alice@example.com" />"]
+"access" = ["<Var name="alice@example.com" />"]
 
 [log]
 # Logger output. Could be "stdout", "stderr" or "/var/lib/teleport/slack.log"
@@ -97,16 +97,16 @@ review:
   # Allows binding between Teleport username and Slack email.
   # This should only be set to true if `review.slackUserIdTrait` is not configured in Teleport.
   # We recommend configuring a trait for stronger identity binding. Default is false.
-  allowEmailUsernameMatch: true
+  allowEmailUsernameMatch: <Var name="slackEmailUsernameBind" />
   # Name of the Teleport trait to bind Teleport user and Slack user.
   # The trait should hold value of Slack user ID.
-  slackUserIdTrait: ""
+  slackUserIdTrait: <Var name="slack_uid" />
 
 # Mapping from role to recipients
 # It must contain a mapping for `*` in case no matching roles are found.
 roleToRecipients:
   "*": "<Var name="access-requests" />"
-  "editor": ["<Var name="alice@example.com" />"]
+  "access": ["<Var name="alice@example.com" />"]
 
 log:
   # Logger output. Could be "stdout", "stderr" or "/var/lib/teleport/slack.log"
@@ -161,7 +161,10 @@ and paste it into this field: <Var name="xapp-..." />
 Teleport username and Slack email.
 
 `slack_user_id_trait`: Fill this in with the name of the Teleport trait to bind
-Teleport user and Slack user. The trait should hold value of Slack user ID.
+Teleport user and Slack user: <Var name="slack_uid" />
+
+The trait should hold value of Slack user ID: <Var name="U123456789" />
+
 If no trait is set up in Teleport, this should remain empty.
 
 **`[role_to_recipients]`**
@@ -169,7 +172,7 @@ If no trait is set up in Teleport, this should remain empty.
 The `role_to_recipients` map configures the channels that the Slack plugin will
 notify when a user requests access to a specific role.
 
-Configure the Slack plugin to notify you when a user requests the `editor` role
+Configure the Slack plugin to notify you when a user requests the `access` role
 by adding the following to your `role_to_recipients` config.
 To route all other requests to a default channel, either create an `access-requests` channel
 in your Slack workspace or rename the value of the `"*"` key to an existing channel.
@@ -177,7 +180,7 @@ in your Slack workspace or rename the value of the `"*"` key to an existing chan
 ```toml
 [role_to_recipients]
 "*" = "<Var name="access-requests" />"
-"editor" = ["<Var name="alice@example.com" />"]
+"access" = ["<Var name="alice@example.com" />"]
 ```
 
 In the `role_to_recipients` map, each key is the name of a Teleport role. Each
@@ -188,7 +191,7 @@ Slack plugin will use that email address to look up a direct message channel.
 
 The `role_to_recipients` map must also include an entry for `"*"`, which the
 plugin looks up if no other entry matches a given role name. In the example
-above, requests for roles aside from `editor` will notify the
+above, requests for roles aside from `access` will notify the
 `access-requests` channel.
 
 </TabItem>
@@ -225,7 +228,10 @@ and paste it into this field: <Var name="xapp-..." />
 Teleport username and Slack email.
 
 `slackUserIdTrait`: Fill this in with the name of the Teleport trait to bind
-Teleport user and Slack user. The trait should hold value of Slack user ID.
+Teleport user and Slack user: <Var name="slack_uid" />
+
+The trait should hold value of Slack user ID: <Var name="U123456789" />
+
 If no trait is set up in Teleport, this should remain empty.
 
 **`roleToRecipients`**
@@ -233,7 +239,7 @@ If no trait is set up in Teleport, this should remain empty.
 The `roleToRecipients` map configures the channels that the Slack plugin will
 notify when a user requests access to a specific role.
 
-Configure the Slack plugin to notify you when a user requests the `editor` role
+Configure the Slack plugin to notify you when a user requests the `access` role
 by adding the following to your `roleToRecipients` config.
 To route all other requests to a default channel, either create an `access-requests` channel
 in your Slack workspace or rename the value of the `"*"` key to an existing channel.
@@ -241,7 +247,7 @@ in your Slack workspace or rename the value of the `"*"` key to an existing chan
 ```yaml
 roleToRecipients:
   "*": "<Var name="access-requests" />"
-  "editor": ["<Var name="alice@example.com" />"]
+  "access": ["<Var name="alice@example.com" />"]
 ```
 
 In the `roleToRecipients` map, each key is the name of a Teleport role. Each
@@ -252,7 +258,7 @@ Slack plugin will use that email address to look up a direct message channel.
 
 The `roleToRecipients` map must also include an entry for `"*"`, which the
 plugin looks up if no other entry matches a given role name. In the example
-above, requests for roles aside from `editor` will notify the
+above, requests for roles aside from `access` will notify the
 `access-requests` channel.
 
 </TabItem>

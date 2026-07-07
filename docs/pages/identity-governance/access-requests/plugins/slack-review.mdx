@@ -1,7 +1,7 @@
 ---
-title: Run the Slack Access Request Plugin with Native Access Request Reviews
-description: How to set up Teleport's Slack plugin with native Access Request reviews.
-sidebar_label: Slack with Native Reviews
+title: Run the Slack Access Request Plugin with Access Request Reviews from Slack
+description: How to set up Teleport's Slack plugin to review Access Requests within Slack.
+sidebar_label: Slack with Access Request Reviews
 tags:
  - access-requests
  - how-to
@@ -11,7 +11,7 @@ enterprise: Identity Governance
 ---
 
 This guide will explain how to configure the Teleport Slack plugin to be able to review
-Access Requests natively within Slack.
+Access Requests directly within Slack.
 
 This guide assumes you are familiar with the [self-hosted Slack plugin guide](slack.mdx),
 which covers initial plugin configuration and Slack app setup.
@@ -24,10 +24,15 @@ the reviewer's Teleport identity, and bypass Teleport authentication
 As a result, a compromised Slack account can approve requests from Slack and escalate privileges in Teleport.
 </Admonition>
 
+<Admonition type="info">
+The Access Request reviews feature for the Teleport Slack plugin is currently
+only for self-hosted plugins. Support for Teleport-hosted plugins will be added in the future.
+</Admonition>
+
 ## How it works
 
 Teleport's Slack integration notifies individuals and channels of
-Access Requests. With native Access Request reviews enabled, users can then
+Access Requests. By enabling the plugin with Access Request reviews, users can then
 approve or deny Access Requests directly within Slack without being redirected to the Teleport Web UI.
 
 ## Prerequisites
@@ -46,7 +51,7 @@ approve or deny Access Requests directly within Slack without being redirected t
 
 ## Step 1/7. Configure your Slack app
 
-In this step, you will configure your Slack app to support the native Access Request reviews feature.
+In this step, you will configure your Slack app to support the Access Request reviews feature.
 
 ### Generate an app-level token
 
@@ -73,30 +78,30 @@ to build a WebSocket connection with the Slack server in order to process Access
 Before you set up the Slack plugin, you will need to enable Role Access Requests
 in your Teleport cluster.
 
-For the purpose of this guide, we will define an `editor-requester` role that
-can request the built-in `editor` role, and an `editor-reviewer` role that can
-review requests for the `editor` role.
+For the purpose of this guide, we will define an `access-requester` role that
+can request the built-in `access` role, and an `access-reviewer` role that can
+review requests for the `access` role.
 
-Create a file called `editor-request-rbac.yaml` with the following content:
+Create a file called `access-request-rbac.yaml` with the following content:
 
 ```yaml
 kind: role
 version: v8
 metadata:
-  name: editor-reviewer
+  name: access-reviewer
 spec:
   allow:
     review_requests:
-      roles: ['editor']
+      roles: ['access']
 ---
 kind: role
 version: v8
 metadata:
-  name: editor-requester
+  name: access-requester
 spec:
   allow:
     request:
-      roles: ['editor']
+      roles: ['access']
       thresholds:
         - approve: 1
           deny: 1
@@ -105,59 +110,118 @@ spec:
 Create the roles you defined:
 
 ```code
-$ tctl create -f editor-request-rbac.yaml
-role 'editor-reviewer' has been created
-role 'editor-requester' has been created
+$ tctl create -f access-request-rbac.yaml
+role 'access-reviewer' has been created
+role 'access-requester' has been created
 ```
 
 (!docs/pages/includes/create-role-using-web.mdx!)
 
 ### Set up the requester user
 
-Create a user called `myuser` who has the `editor-requester` role. This user
-cannot edit your cluster configuration unless they request the `editor` role:
+Create a user called `myuser` who has the `access-requester` role:
 
 ```code
-$ tctl users add myuser --roles=editor-requester
+$ tctl users add myuser --roles=access-requester
 ```
 
 Visit the invitation URL that is printed and login as `myuser` for the first time,
 registering credentials as configured for your Teleport cluster.
 
-Later in this guide, you will have `myuser` request the `editor` role so you can
+Later in this guide, you will have `myuser` request the `access` role so you can
 review the request using the Teleport Slack plugin.
 
 ### Set up the reviewer user
 
 Next, we will set up a user that can review Access Requests directly within Slack.
-For this guide, we will bind the reviewer user based on Teleport username and Slack email.
-
-Prepare a Slack user with an email address.
-Create a Teleport user with a username set to the Slack user's email: <Var name="alice@example.com" />:
-
-```code
-$ tctl users add <Var name="alice@example.com" /> --roles=editor-reviewer
-```
-
-Visit the invitation URL that is printed and login as `<Var name="alice@example.com" />` for the first time,
-registering credentials as configured for your Teleport cluster.
-
-The Slack user will now be able to review Access Requests for the `editor` role within Slack
-once we set up the Teleport Slack plugin.
-
-For stronger identity binding, you can set up a Teleport trait
-that contains the value of the Slack user ID, such as `slack_uid: U123456789`,
-but this will not be covered in this guide.
 
 <Admonition type="info">
-There are two identity binding models for Slack reviewers:
+All users performing Access Request reviews within Slack must have an associated local Teleport user.
+When using an external Identity Provider, users should be imported using
+the User Sync feature from the Teleport Okta integration or the Teleport Entra ID integration.
+Teleport users that are SSO-only logins are short-lived and will expire,
+requiring a re-login in Teleport to submit reviews in Slack.
+</Admonition>
 
+There are two identity binding models for Slack reviewers:
 - binding based on Teleport username and Slack email
 - binding based on Teleport trait and Slack user ID
 
 The binding based on Teleport trait is stronger, but requires a Teleport user to be given a trait with
 their Slack user ID, often coming from the Identity Provider/SSO connector.
-</Admonition>
+
+You can set up both types of identity bindings if some users are imported
+from an Identity Provider/SSO connector while others are local Teleport users.
+
+<Tabs>
+<TabItem label="Teleport trait binding">
+
+Create a Teleport user with a username set as <Var name="alice@example.com" />
+and assigned the role `access-reviewer`.
+
+```code
+$ tctl users add <Var name="alice@example.com" /> --roles=access-reviewer
+```
+
+Visit the invitation URL that is printed and login as <Var name="alice@example.com" /> for the first time,
+registering credentials as configured for your Teleport cluster.
+
+We will assign the reviewer user with a Teleport trait named <Var name="slack_uid" />
+that holds the value of the Slack user's ID: <Var name="U123456789" />.
+The trait name can also be configured in the plugin configuration step.
+
+<Tabs>
+<TabItem label="Local users">
+
+Create a file called `user-traits.yaml` with the following content:
+
+```yaml
+kind: user
+version: v2
+metadata:
+  name: <Var name="alice@example.com" />
+spec:
+  roles: ['access-reviewer']
+  traits:
+    <Var name="slack_uid" />: ['<Var name="U123456789" />']
+```
+
+Update the newly created user for <Var name="alice@example.com" />:
+
+```code
+$ tctl create -f user-traits.yaml
+```
+
+</TabItem>
+<TabItem label="SSO users">
+
+When using a single sign-on user, the Teleport trait should be configured in the Identity Provider.
+
+To get started integrating your Identity Provider with Teleport, read [Integrate
+your Identity Provider](../../../zero-trust-access/sso/integrate-idp/integrate-idp.mdx).
+
+</TabItem>
+</Tabs>
+
+</TabItem>
+<TabItem label="Teleport username binding">
+
+Prepare a Slack user with an email address.
+Create a Teleport user with a username set to the Slack user's email <Var name="alice@example.com" />
+and assigned the role `access-reviewer`.
+
+```code
+$ tctl users add <Var name="alice@example.com" /> --roles=access-reviewer
+```
+
+Visit the invitation URL that is printed and login as <Var name="alice@example.com" /> for the first time,
+registering credentials as configured for your Teleport cluster.
+
+</TabItem>
+</Tabs>
+
+The Slack user will now be able to review Access Requests for the `access` role within Slack
+once we set up the Teleport Slack plugin.
 
 ## Step 3/7. Install the Teleport Slack plugin
 
@@ -284,7 +348,7 @@ running, you can now test the workflow.
 
 ### Create an Access Request
 
-(!docs/pages/includes/plugins/create-request.mdx!)
+(!docs/pages/includes/plugins/create-request.mdx role="access"!)
 
 The user you configured earlier to review the request should receive a direct
 message from "Teleport" in Slack with Access Request details.
@@ -363,7 +427,7 @@ $ sudo systemctl start teleport-slack
   `Insufficient permissions to review request`,
   ensure the Slack reviewer is properly bound with a local Teleport user,
   and that Teleport user has sufficient review permissions.
-  Also ensure that the Slack plugin is using the Teleport role
+  Also ensure that the Slack plugin is using the preset Teleport role
   `access-plugin-with-review` which provides proper RBAC permissions for the Slack plugin.
 - A Slack plugin using a long-lived identity file will not work with a Teleport cluster
   with admin-action MFA enabled. If admin-action MFA is enabled, use a Slack plugin with a Machine ID bot.
