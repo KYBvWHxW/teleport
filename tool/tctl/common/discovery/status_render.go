@@ -25,6 +25,8 @@ import (
 
 	"github.com/dustin/go-humanize"
 	"github.com/gravitational/trace"
+
+	discoveryconfigv1 "github.com/gravitational/teleport/api/gen/proto/go/teleport/discoveryconfig/v1"
 )
 
 const discoveryServiceSetupDocsURL = "https://goteleport.com/docs/reference/deployment/config/#discovery-service"
@@ -139,13 +141,13 @@ func writeSummaryLine(w io.Writer, format string, args ...any) error {
 
 func formatSummaryState(state string) string {
 	switch state {
-	case "", "DISCOVERY_CONFIG_STATE_UNSPECIFIED":
+	case "", discoveryconfigv1.DiscoveryConfigState_DISCOVERY_CONFIG_STATE_UNSPECIFIED.String():
 		return summaryStatusNotReporting
-	case "DISCOVERY_CONFIG_STATE_ERROR":
+	case discoveryconfigv1.DiscoveryConfigState_DISCOVERY_CONFIG_STATE_ERROR.String():
 		return "error"
-	case "DISCOVERY_CONFIG_STATE_SYNCING":
+	case discoveryconfigv1.DiscoveryConfigState_DISCOVERY_CONFIG_STATE_SYNCING.String():
 		return "syncing"
-	case "DISCOVERY_CONFIG_STATE_RUNNING":
+	case discoveryconfigv1.DiscoveryConfigState_DISCOVERY_CONFIG_STATE_RUNNING.String():
 		return "healthy"
 	default:
 		return state
@@ -171,7 +173,8 @@ func formatSyncDuration(start, end *time.Time) string {
 	if start == nil || end == nil {
 		return ""
 	}
-	return " (took " + end.Sub(*start).String() + ")"
+	duration := end.Sub(*start).Round(time.Second)
+	return " (took " + duration.String() + ")"
 }
 
 func formatResourceResult(result resourceResult) string {

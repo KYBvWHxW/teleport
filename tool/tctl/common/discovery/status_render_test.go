@@ -75,7 +75,7 @@ func TestRenderSummaryText(t *testing.T) {
     Last update: 1 minute ago
     ambient credentials:
       AWS EC2 discovery:
-        Previous sync: 4 minutes ago (took 30s)
+        Previous sync: 4 minutes ago (took 12s)
         Result: 10 found, 8 enrolled, 2 failed
       AWS RDS discovery:
         Previous sync: 3 minutes ago (took 30s)
@@ -112,6 +112,7 @@ func TestRenderSummaryText(t *testing.T) {
 func renderMultiServerSummary(t *testing.T, now time.Time) string {
 	t.Helper()
 
+	roundsTo12Seconds := 11*time.Second + 832865310*time.Nanosecond
 	var buf bytes.Buffer
 	require.NoError(t, discoverySummary{
 		{
@@ -127,7 +128,7 @@ func renderMultiServerSummary(t *testing.T, now time.Time) string {
 					Integrations: []integrationSummary{
 						{
 							Resources: []resourceResult{
-								testResourceResult(resourceKindAWSEC2, 10, 8, 2, now.Add(-4*time.Minute-30*time.Second), now.Add(-4*time.Minute)),
+								testResourceResult(resourceKindAWSEC2, 10, 8, 2, now.Add(-4*time.Minute-roundsTo12Seconds), now.Add(-4*time.Minute)),
 								testResourceResult(resourceKindAWSRDS, 5, 4, 1, now.Add(-3*time.Minute-30*time.Second), now.Add(-3*time.Minute)),
 							},
 						},
