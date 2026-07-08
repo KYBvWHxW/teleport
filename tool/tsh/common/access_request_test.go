@@ -178,10 +178,13 @@ func TestAccessRequestSearch(t *testing.T) {
 				kind:            types.KindKubernetesCluster,
 			},
 			wantTable: func() string {
+				// kube_cluster now lists via ListUnifiedResources: the Resource ID
+				// column is replaced by the granted/requestable Access summary,
+				// which is empty for kinds without selectable principals.
 				table := asciitable.MakeTableWithTruncatedColumn(
-					[]string{"Name", "Hostname", "Labels", "Resource ID"},
+					[]string{"Name", "Hostname", "Labels", "Access"},
 					[][]string{
-						{leafKubeCluster, "", "", fmt.Sprintf("/%s/kube_cluster/%s", leafClusterName, leafKubeCluster)},
+						{leafKubeCluster, "", "", ""},
 					},
 					"Labels")
 				return table.AsBuffer().String()
@@ -782,6 +785,154 @@ func TestPrintRequestableResources(t *testing.T) {
 
 		err := printRequestableResources(cf, rows, resourceIDs)
 		require.Error(t, err)
+	})
+}
+
+func TestSplitPrincipals(t *testing.T) {
+	tests := []struct {
+		name            string
+		logins          []string
+		grantedLogins   []string
+		wantGranted     []string
+		wantRequestable []string
+	}{
+		{
+			name:            "granted and requestable",
+			logins:          []string{"admin", "deploy", "root"},
+			grantedLogins:   []string{"deploy"},
+			wantGranted:     []string{"deploy"},
+			wantRequestable: []string{"admin", "root"},
+		},
+		{
+			name:          "all granted",
+			logins:        []string{"deploy", "root"},
+			grantedLogins: []string{"root", "deploy"},
+			wantGranted:   []string{"deploy", "root"},
+		},
+		{
+			// Older Auth returns only the union; everything is shown as
+			// requestable rather than mislabeled as granted.
+			name:            "none granted (mixed-version fallback)",
+			logins:          []string{"root", "admin"},
+			wantRequestable: []string{"admin", "root"},
+		},
+		{
+			name: "no principals",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := splitPrincipals(&types.EnrichedResource{
+				Logins:        tt.logins,
+				GrantedLogins: tt.grantedLogins,
+			})
+			require.Equal(t, tt.wantGranted, got.granted)
+			require.Equal(t, tt.wantRequestable, got.requestable)
+		})
+	}
+}
+
+func TestFormatAccessSummary(t *testing.T) {
+	tests := []struct {
+		name string
+		in   principalSplit
+		want string
+	}{
+		{"both", principalSplit{granted: []string{"a"}, requestable: []string{"b", "c"}}, "1 granted, 2 requestable"},
+		{"granted only", principalSplit{granted: []string{"a", "b", "c"}}, "3 granted"},
+		{"requestable only", principalSplit{requestable: []string{"a"}}, "1 requestable"},
+		{"empty", principalSplit{}, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			require.Equal(t, tt.want, formatAccessSummary(tt.in))
+		})
+	}
+}
+
+func TestPrintResourcePreview(t *testing.T) {
+	server, err := types.NewServer("web-1", types.KindNode, types.ServerSpecV2{Hostname: "web-1.dc1"})
+	require.NoError(t, err)
+	server.SetStaticLabels(map[string]string{"env": "prod"})
+	id := types.ResourceID{ClusterName: "main", Kind: types.KindNode, Name: "web-1"}
+	split := principalSplit{granted: []string{"deploy"}, requestable: []string{"admin", "root"}}
+
+	t.Run("text", func(t *testing.T) {
+		var buf bytes.Buffer
+		cf := &CLIConf{OverrideStdout: &buf}
+		require.NoError(t, printResourcePreview(cf, id, server, split))
+		out := buf.String()
+		require.Contains(t, out, "Resource:  /main/node/web-1")
+		require.Contains(t, out, "Hostname:  web-1.dc1")
+		require.Contains(t, out, "Logins:")
+		require.Contains(t, out, "deploy")
+		require.Contains(t, out, "granted")
+		require.Contains(t, out, "requestable")
+		// The create hint scopes to the requestable principals.
+		require.Contains(t, out, "logins=admin,root")
+	})
+
+	t.Run("json", func(t *testing.T) {
+		var buf bytes.Buffer
+		cf := &CLIConf{OverrideStdout: &buf, Format: "json"}
+		require.NoError(t, printResourcePreview(cf, id, server, split))
+		require.JSONEq(t, `{
+			"resource_id": "/main/node/web-1",
+			"kind": "node",
+			"name": "web-1",
+			"hostname": "web-1.dc1",
+			"labels": {"env": "prod"},
+			"principal_kind": "logins",
+			"granted": ["deploy"],
+			"requestable": ["admin", "root"]
+		}`, buf.String())
+	})
+
+	t.Run("no principals", func(t *testing.T) {
+		var buf bytes.Buffer
+		cf := &CLIConf{OverrideStdout: &buf}
+		require.NoError(t, printResourcePreview(cf, id, server, principalSplit{}))
+		require.Contains(t, buf.String(), "No selectable principals")
+	})
+}
+
+func TestPrintRequestableResourcesAccess(t *testing.T) {
+	rows := []genericResourceRow{
+		{
+			Name:        "web-1",
+			Hostname:    "web-1.dc1",
+			Labels:      "env=prod",
+			Access:      "1 granted, 2 requestable",
+			ResourceID:  "/main/node/web-1",
+			Granted:     []string{"deploy"},
+			Requestable: []string{"admin", "root"},
+		},
+	}
+	resourceIDs := []string{"/main/node/web-1"}
+
+	t.Run("text shows Access column, not Resource ID", func(t *testing.T) {
+		var buf bytes.Buffer
+		cf := &CLIConf{OverrideStdout: &buf}
+		require.NoError(t, printRequestableResources(cf, rows, resourceIDs))
+		out := buf.String()
+		require.Contains(t, out, "Access")
+		// The summary column can truncate at narrow (80-col) widths; the full
+		// value is asserted via --format json below.
+		require.Contains(t, out, "1 granted")
+		require.NotContains(t, out, "Resource ID")
+		require.Contains(t, out, "tsh request preview")
+	})
+
+	t.Run("json carries granted/requestable and resource id", func(t *testing.T) {
+		var buf bytes.Buffer
+		cf := &CLIConf{OverrideStdout: &buf, Format: "json"}
+		require.NoError(t, printRequestableResources(cf, rows, resourceIDs))
+		out := buf.String()
+		require.Contains(t, out, `"ResourceID": "/main/node/web-1"`)
+		require.Contains(t, out, `"Granted"`)
+		require.Contains(t, out, `"Requestable"`)
+		// Access is the text-only summary and must not leak into JSON.
+		require.NotContains(t, out, `"Access"`)
 	})
 }
 
