@@ -1,0 +1,13 @@
+{
+  "resource_id": "/main/node/web-1",
+  "kind": "node",
+  "name": "web-1",
+  "hostname": "web-1.example.com",
+  "labels": {
+    "env": "staging",
+    "team": "web"
+  },
+  "principal_kind": "logins",
+  "granted": ["ubuntu"],
+  "requestable": ["root", "admin"]
+}
