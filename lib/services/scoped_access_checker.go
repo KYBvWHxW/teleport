@@ -87,7 +87,8 @@ func (b *scopedAccessCheckerBuilder) newCheckerForRole(ctx context.Context, key 
 	}
 
 	rsp, err := b.reader.GetScopedRole(ctx, scopedaccessv1.GetScopedRoleRequest_builder{
-		Name: key.RoleName,
+		Name:  key.RoleName,
+		Scope: key.RoleScope,
 	}.Build())
 	if err != nil {
 		if trace.IsNotFound(err) {

@@ -1581,7 +1581,7 @@ func TestAuthPreferenceSettings_ScopedIdentity(t *testing.T) {
 			Spec: scopedaccessv1.ScopedRoleAssignmentSpec_builder{
 				User: user.GetName(),
 				Assignments: []*scopedaccessv1.Assignment{
-					scopedaccessv1.Assignment_builder{Role: "empty-role", Scope: "/test/scope"}.Build(),
+					scopedaccessv1.Assignment_builder{Role: "/test::empty-role", Scope: "/test/scope"}.Build(),
 				},
 			}.Build(),
 		}.Build(),
@@ -1592,6 +1592,7 @@ func TestAuthPreferenceSettings_ScopedIdentity(t *testing.T) {
 		_, err := srv.AuthServer.AuthServer.ScopedAccessCache.GetScopedRoleAssignment(ctx, scopedaccessv1.GetScopedRoleAssignmentRequest_builder{
 			Name:    createResp.GetAssignment().GetMetadata().GetName(),
 			SubKind: createResp.GetAssignment().GetSubKind(),
+			Scope:   createResp.GetAssignment().GetScope(),
 		}.Build())
 		require.NoError(t, err)
 	}, 10*time.Second, 100*time.Millisecond)
@@ -2924,7 +2925,7 @@ func TestGetCertAuthority_ScopedIdentity(t *testing.T) {
 			Spec: scopedaccessv1.ScopedRoleAssignmentSpec_builder{
 				User: user.GetName(),
 				Assignments: []*scopedaccessv1.Assignment{
-					scopedaccessv1.Assignment_builder{Role: "empty-role", Scope: "/test/scope"}.Build(),
+					scopedaccessv1.Assignment_builder{Role: "/test::empty-role", Scope: "/test/scope"}.Build(),
 				},
 			}.Build(),
 		}.Build(),
@@ -2935,6 +2936,7 @@ func TestGetCertAuthority_ScopedIdentity(t *testing.T) {
 		_, err := srv.AuthServer.AuthServer.ScopedAccessCache.GetScopedRoleAssignment(ctx, scopedaccessv1.GetScopedRoleAssignmentRequest_builder{
 			Name:    createResp.GetAssignment().GetMetadata().GetName(),
 			SubKind: createResp.GetAssignment().GetSubKind(),
+			Scope:   createResp.GetAssignment().GetScope(),
 		}.Build())
 		require.NoError(t, err)
 	}, 10*time.Second, 100*time.Millisecond)
@@ -5325,7 +5327,7 @@ func TestWatchEvents_ScopedIdentity(t *testing.T) {
 			Spec: scopedaccessv1.ScopedRoleAssignmentSpec_builder{
 				User: user.GetName(),
 				Assignments: []*scopedaccessv1.Assignment{
-					scopedaccessv1.Assignment_builder{Role: "empty-role", Scope: "/test/scope"}.Build(),
+					scopedaccessv1.Assignment_builder{Role: "/test::empty-role", Scope: "/test/scope"}.Build(),
 				},
 			}.Build(),
 		}.Build(),
@@ -5336,6 +5338,7 @@ func TestWatchEvents_ScopedIdentity(t *testing.T) {
 		_, err := srv.AuthServer.AuthServer.ScopedAccessCache.GetScopedRoleAssignment(ctx, scopedaccessv1.GetScopedRoleAssignmentRequest_builder{
 			Name:    createResp.GetAssignment().GetMetadata().GetName(),
 			SubKind: createResp.GetAssignment().GetSubKind(),
+			Scope:   createResp.GetAssignment().GetScope(),
 		}.Build())
 		require.NoError(t, err)
 	}, 10*time.Second, 100*time.Millisecond)
