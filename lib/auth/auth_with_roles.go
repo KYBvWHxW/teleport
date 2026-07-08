@@ -418,13 +418,12 @@ func (a *ServerWithRoles) agentResourceAction(ctx context.Context, hostID string
 	if !a.hasBuiltinRole(systemRoles...) {
 		return ErrNoAgentIdentity
 	}
-	hostRole, ok := a.context.Identity.(authz.BuiltinRole)
+	serverID, ok := getBuiltinServerID(a.context.Identity)
 	if !ok {
 		return ErrNoAgentIdentity
 	}
-	authorizedHostID := hostRole.GetServerID()
-	if hostID != authorizedHostID {
-		return trace.AccessDenied("host ID %q does not match agent identity ID %q", hostID, authorizedHostID)
+	if hostID != serverID {
+		return trace.AccessDenied("host ID %q does not match agent identity ID %q", hostID, serverID)
 	}
 	return nil
 }
