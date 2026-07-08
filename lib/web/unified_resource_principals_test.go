@@ -19,6 +19,7 @@
 package web
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -104,6 +105,27 @@ func TestPrincipalsForUnifiedResource_SSH(t *testing.T) {
 		// Granted is the intersection of AccessChecker result and cert principals.
 		require.Equal(t, set.New("ubuntu"), result.Logins.Granted)
 	})
+
+	t.Run("IncludeRequestable prefers Auth GrantedLogins over local checker", func(t *testing.T) {
+		t.Parallel()
+
+		result, err := PrincipalsForUnifiedResource(PrincipalsForUnifiedResourceOpts{
+			Resource: &types.EnrichedResource{
+				ResourceWithLabels: server,
+				Logins:             []string{"root", "ubuntu", "admin"},
+				GrantedLogins:      []string{"ubuntu", "admin"},
+			},
+			CertPrincipals: []string{"ubuntu", "root"},
+			// Erroring checker proves the local fallback is not consulted.
+			AccessChecker:      &mockLoginGetter{err: errors.New("must not be called")},
+			IncludeRequestable: true,
+		})
+		require.NoError(t, err)
+
+		require.Equal(t, set.New("root", "ubuntu", "admin"), result.Logins.All)
+		// Granted is Auth's GrantedLogins filtered to cert principals.
+		require.Equal(t, set.New("ubuntu"), result.Logins.Granted)
+	})
 }
 
 func TestPrincipalsForUnifiedResource_App(t *testing.T) {
@@ -174,6 +196,31 @@ func TestPrincipalsForUnifiedResource_App(t *testing.T) {
 				Logins:             []string{"arn:aws:iam::111:role/Admin", "arn:aws:iam::111:role/ReadOnly"},
 			},
 			AccessChecker:      &mockLoginGetter{logins: []string{"arn:aws:iam::111:role/ReadOnly"}},
+			IncludeRequestable: true,
+		})
+		require.NoError(t, err)
+
+		require.Equal(t,
+			set.New("arn:aws:iam::111:role/Admin", "arn:aws:iam::111:role/ReadOnly"),
+			result.AWSRoleARNs.All,
+		)
+		require.Equal(t,
+			set.New("arn:aws:iam::111:role/ReadOnly"),
+			result.AWSRoleARNs.Granted,
+		)
+	})
+
+	t.Run("IncludeRequestable prefers Auth GrantedLogins over local checker", func(t *testing.T) {
+		t.Parallel()
+
+		result, err := PrincipalsForUnifiedResource(PrincipalsForUnifiedResourceOpts{
+			Resource: &types.EnrichedResource{
+				ResourceWithLabels: appServer,
+				Logins:             []string{"arn:aws:iam::111:role/Admin", "arn:aws:iam::111:role/ReadOnly"},
+				GrantedLogins:      []string{"arn:aws:iam::111:role/ReadOnly"},
+			},
+			// Erroring checker proves the local fallback is not consulted.
+			AccessChecker:      &mockLoginGetter{err: errors.New("must not be called")},
 			IncludeRequestable: true,
 		})
 		require.NoError(t, err)

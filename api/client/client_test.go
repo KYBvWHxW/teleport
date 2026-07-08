@@ -747,16 +747,18 @@ func TestGetUnifiedResourcesWithLogins(t *testing.T) {
 		resp: &proto.ListUnifiedResourcesResponse{
 			Resources: []*proto.PaginatedResource{
 				{
-					Resource: &proto.PaginatedResource_Node{Node: &types.ServerV2{}},
-					Logins:   []string{"alice", "bob"},
+					Resource:      &proto.PaginatedResource_Node{Node: &types.ServerV2{}},
+					Logins:        []string{"alice", "bob"},
+					GrantedLogins: []string{"alice"},
 				},
 				{
 					Resource: &proto.PaginatedResource_WindowsDesktop{WindowsDesktop: &types.WindowsDesktopV3{}},
 					Logins:   []string{"llama"},
 				},
 				{
-					Resource: &proto.PaginatedResource_AppServer{AppServer: &types.AppServerV3{}},
-					Logins:   []string{"llama"},
+					Resource:      &proto.PaginatedResource_AppServer{AppServer: &types.AppServerV3{}},
+					Logins:        []string{"llama"},
+					GrantedLogins: []string{"llama"},
 				},
 			},
 		},
@@ -777,10 +779,13 @@ func TestGetUnifiedResourcesWithLogins(t *testing.T) {
 		switch enriched.ResourceWithLabels.(type) {
 		case *types.ServerV2:
 			assert.Equal(t, enriched.Logins, clt.resp.Resources[0].Logins)
+			assert.Equal(t, enriched.GrantedLogins, clt.resp.Resources[0].GrantedLogins)
 		case *types.WindowsDesktopV3:
 			assert.Equal(t, enriched.Logins, clt.resp.Resources[1].Logins)
+			assert.Equal(t, enriched.GrantedLogins, clt.resp.Resources[1].GrantedLogins)
 		case *types.AppServerV3:
 			assert.Equal(t, enriched.Logins, clt.resp.Resources[2].Logins)
+			assert.Equal(t, enriched.GrantedLogins, clt.resp.Resources[2].GrantedLogins)
 		}
 	}
 }
