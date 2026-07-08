@@ -414,10 +414,10 @@ func (a *ServerWithRoles) agentOwnedResourceAction(ctx context.Context, hostID s
 	}
 	serverID, ok := getBuiltinServerID(a.context.Identity)
 	if !ok {
-		return false, nil
+		return false, trace.BadParameter("no agent identity after confirming that request context is BuiltinRole (this is a bug)")
 	}
 	if hostID != serverID {
-		return true, trace.AccessDenied("host ID %q does not match agent identity ID %q", hostID, serverID)
+		return true, trace.AccessDenied("resource host ID %+q does not match agent identity ID %+q", hostID, serverID)
 	}
 	return true, nil
 }
@@ -1156,7 +1156,7 @@ func (a *ScopedServerWithRoles) UpsertNode(ctx context.Context, s types.Server) 
 	agentScope := a.scopedContext.Identity.GetIdentity().GetAgentScope()
 	if nodeScope := s.GetScope(); agentScope != "" {
 		if nodeScope != agentScope {
-			return nil, trace.AccessDenied("node scope %q does not match agent identity scope %q", nodeScope, agentScope)
+			return nil, trace.AccessDenied("node scope %+q does not match agent identity scope %+q", nodeScope, agentScope)
 		}
 	}
 
