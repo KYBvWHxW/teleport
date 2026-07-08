@@ -438,6 +438,50 @@ func TestPrintRequest(t *testing.T) {
 			},
 		},
 		{
+			name: "request with constrained SSH node resources",
+			req: &types.AccessRequestV3{
+				Metadata: types.Metadata{
+					Name:    "ssh-request",
+					Expires: &expiresTime,
+				},
+				Spec: types.AccessRequestSpecV3{
+					User:       "testuser",
+					Roles:      []string{"ssh-access"},
+					Expires:    expiresTime,
+					SessionTTL: expiresTime,
+					Created:    createdAtTime,
+					RequestedResourceAccessIDs: []types.ResourceAccessID{
+						{
+							Id: types.ResourceID{
+								ClusterName: "test-cluster",
+								Kind:        types.KindNode,
+								Name:        "web-1",
+							},
+							Constraints: &types.ResourceConstraints{
+								Version: types.V1,
+								Details: &types.ResourceConstraints_Ssh{
+									Ssh: &types.SSHResourceConstraints{
+										Logins: []string{"root", "admin"},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+			wantPresent: []string{
+				"Request ID:",
+				"ssh-request",
+				"Username:",
+				"testuser",
+				"Roles:",
+				"ssh-access",
+				"Resources:",
+				"/test-cluster/node/web-1",
+				"logins=root,admin",
+			},
+		},
+		{
 			name: "request with kubernetes namespace resources",
 			req: &types.AccessRequestV3{
 				Metadata: types.Metadata{
