@@ -2347,6 +2347,13 @@ message PaginatedResource {
   // RequiresRequest indicates if a resource requires an access request to access. Only populated with requests
   // that IncludeRequestable.
   bool RequiresRequest = 14 [(gogoproto.jsontag) = "requires_request,omitempty"];
+  // GrantedLogins is the subset of Logins the user can already use without an
+  // access request. Logins carries the full set (granted union requestable),
+  // per principal kind (SSH logins for nodes/desktops, AWS role ARNs for AWS
+  // Console apps), mirroring the Logins field. Only populated when
+  // IncludeRequestable is set; clients derive the requestable set as Logins
+  // minus GrantedLogins.
+  repeated string GrantedLogins = 18 [(gogoproto.jsontag) = "granted_logins,omitempty"];
 
   reserved 4;
   reserved "KubeService";
