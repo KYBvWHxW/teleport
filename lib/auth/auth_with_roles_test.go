@@ -13929,12 +13929,12 @@ func TestRoleNodeLeastPrivilege(t *testing.T) {
 	node := newScopedTestServerForHost(t, as, ownID, "" /* scope */, types.RoleNode)
 
 	t.Run("upsert own node allowed", func(t *testing.T) {
-		_, err := node.UpsertNode(ctx, makeNode(t, ownID))
+		_, err := node.ScopedServerWithRoles().UpsertNode(ctx, makeNode(t, ownID))
 		require.NoError(t, err)
 	})
 
 	t.Run("upsert other node denied", func(t *testing.T) {
-		_, err := node.UpsertNode(ctx, makeNode(t, otherID))
+		_, err := node.ScopedServerWithRoles().UpsertNode(ctx, makeNode(t, otherID))
 		require.True(t, trace.IsAccessDenied(err), "expected access denied, got: %v", err)
 	})
 

@@ -412,7 +412,24 @@ func (a *ServerWithRoles) agentOwnedResourceAction(ctx context.Context, hostID s
 	if !a.hasBuiltinRole(systemRoles...) {
 		return false, nil
 	}
-	serverID, ok := getBuiltinServerID(a.context.Identity)
+	serverID, ok := getLocalServerID(a.context.Identity)
+	if !ok {
+		return false, trace.BadParameter("no agent identity after confirming that request context is BuiltinRole (this is a bug)")
+	}
+	if hostID != serverID {
+		return true, trace.AccessDenied("resource host ID %+q does not match agent identity ID %+q", hostID, serverID)
+	}
+	return true, nil
+}
+
+// agentOwnedResourceAction authorizes an agent identity to perform actions on its own resources.
+// If the authorization context is not for an agent identity with one of the expected system roles,
+// <false, nil> is returned.
+func (a *ScopedServerWithRoles) agentOwnedResourceAction(ctx context.Context, hostID string, systemRoles ...types.SystemRole) (bool, error) {
+	if !a.hasBuiltinRole(systemRoles...) {
+		return false, nil
+	}
+	serverID, ok := getLocalServerID(a.scopedContext.Identity)
 	if !ok {
 		return false, trace.BadParameter("no agent identity after confirming that request context is BuiltinRole (this is a bug)")
 	}
@@ -1137,20 +1154,19 @@ func (a *ServerWithRoles) ClearAlertAcks(ctx context.Context, req proto.ClearAle
 }
 
 func (a *ScopedServerWithRoles) UpsertNode(ctx context.Context, s types.Server) (*types.KeepAlive, error) {
-	isOwner, err := a.agentOwnedResourceAction(ctx, s.GetName(), types.RoleNode)
-	if err != nil {
-		return nil, trace.Wrap(err)
-	}
-
-	if !isOwner {
-		ruleCtx := a.scopedContext.RuleContext()
-		// Note: UpsertNode doesn't allow any namespaces but "default".
-		// The Decision API only checks on the default namespace.
-		if err := a.scopedContext.CheckerContext.Decision(ctx, s.GetScope(), func(checker *services.ScopedAccessChecker) error {
-			return checker.CheckAccessToRules(&ruleCtx, types.KindNode, types.VerbCreate, types.VerbUpdate)
-		}); err != nil {
-			return nil, trace.Wrap(err)
+	ruleCtx := a.scopedContext.RuleContext()
+	// Note: UpsertNode doesn't allow any namespaces but "default".
+	// The Decision API only checks on the default namespace.
+	if err := a.scopedContext.CheckerContext.Decision(ctx, s.GetScope(), func(checker *services.ScopedAccessChecker) error {
+		isOwner, err := a.agentOwnedResourceAction(ctx, s.GetName(), types.RoleNode)
+		if err != nil {
+			return trace.Wrap(err)
+		} else if isOwner {
+			return nil
 		}
+		return checker.CheckAccessToRules(&ruleCtx, types.KindNode, types.VerbCreate, types.VerbUpdate)
+	}); err != nil {
+		return nil, trace.Wrap(err)
 	}
 
 	agentScope := a.scopedContext.Identity.GetIdentity().GetAgentScope()
