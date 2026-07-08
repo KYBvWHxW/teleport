@@ -33,6 +33,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws/arn"
 	"github.com/aws/aws-sdk-go-v2/service/ec2"
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/gravitational/trace"
 
 	usageeventsv1 "github.com/gravitational/teleport/api/gen/proto/go/usageevents/v1"
@@ -224,6 +225,14 @@ type EC2ClientGetter func(ctx context.Context, region string, opts ...awsconfig.
 // AWSOrganizationsGetter gets an AWS Organizations client used for listing accounts.
 type AWSOrganizationsGetter func(ctx context.Context, opts ...awsconfig.OptionsFn) (organizations.OrganizationsClient, error)
 
+// AWSSTSClient is the subset of the AWS STS API used by EC2 discovery.
+type AWSSTSClient interface {
+	GetCallerIdentity(ctx context.Context, params *sts.GetCallerIdentityInput, optFns ...func(*sts.Options)) (*sts.GetCallerIdentityOutput, error)
+}
+
+// AWSSTSGetter gets an AWS STS client for the given region.
+type AWSSTSGetter func(ctx context.Context, region string, opts ...awsconfig.OptionsFn) (AWSSTSClient, error)
+
 // MatcherToEC2FetcherParams contains parameters for converting AWS EC2 Matchers
 // into AWS EC2 Fetchers.
 type MatcherToEC2FetcherParams struct {
@@ -235,6 +244,8 @@ type MatcherToEC2FetcherParams struct {
 	RegionsListerGetter awsregions.ListerGetter
 	// AWSOrganizationsGetter gets a client that is capable of listing AWS organizations.
 	AWSOrganizationsGetter AWSOrganizationsGetter
+	// AWSSTSGetter gets a client that is capable of resolving AWS caller identity.
+	AWSSTSGetter AWSSTSGetter
 	// DiscoveryConfigName is the name of the DiscoveryConfig that contains the matchers.
 	// Empty if using static matchers (coming from the `teleport.yaml`).
 	DiscoveryConfigName string
@@ -256,6 +267,7 @@ func MatchersToEC2InstanceFetchers(ctx context.Context, matcherParams MatcherToE
 			EC2ClientGetter:        matcherParams.EC2ClientGetter,
 			RegionsListerGetter:    matcherParams.RegionsListerGetter,
 			AWSOrganizationsGetter: matcherParams.AWSOrganizationsGetter,
+			AWSSTSGetter:           matcherParams.AWSSTSGetter,
 			DiscoveryConfigName:    matcherParams.DiscoveryConfigName,
 			Logger:                 matcherParams.Logger,
 		})
@@ -353,30 +365,89 @@ func accountIDFromRoleARN(roleARN string) (string, error) {
 	return parsed.AccountID, nil
 }
 
-// accountIDFromRoleARNOrSynthetic returns the AWS account ID from
-// roleARN when available, or a synthetic account ID otherwise. An
-// empty roleARN is expected when using ambient credentials rather
-// than an explicit assume-role ARN.
+type accountIDFromCredentialScopeParams struct {
+	awsSTSGetter AWSSTSGetter
+	awsOpts      []awsconfig.OptionsFn
+	roleARN      string
+	integration  string
+	region       string
+}
+
+// accountIDFromCredentialScopeOrSynthetic returns the AWS account ID from
+// roleARN when available, then from sts:GetCallerIdentity using the provided
+// credential scope, or a synthetic account ID otherwise. An empty roleARN is
+// expected when using ambient or integration credentials without an explicit
+// assume-role ARN.
 //
-// Synthetic account IDs are deterministic for the same (roleARN,
-// integration, region) scope and are only used for issue
-// grouping/deduplication. They must not be interpreted as real
-// AWS account IDs.
-func accountIDFromRoleARNOrSynthetic(ctx context.Context, logger *slog.Logger, roleARN, integration, region string) string {
-	accountID, err := accountIDFromRoleARN(roleARN)
+// Synthetic account IDs are deterministic for the same (roleARN, integration,
+// region) scope and are only used for issue grouping/deduplication. They must
+// not be interpreted as real AWS account IDs.
+func accountIDFromCredentialScopeOrSynthetic(ctx context.Context, logger *slog.Logger, params accountIDFromCredentialScopeParams) string {
+	if logger == nil {
+		logger = slog.Default()
+	}
+
+	accountID, err := accountIDFromRoleARN(params.roleARN)
 	if accountID != "" {
 		return accountID
 	}
-	fallbackAccountID := syntheticAccountID(roleARN, integration, region)
+	fallbackAccountID := syntheticAccountID(params.roleARN, params.integration, params.region)
 
 	if err != nil {
-		logger.DebugContext(ctx, "Could not parse account ID from assume role ARN; using synthetic account grouping key for EC2 permission reporting",
-			"role_arn", roleARN,
-			"integration", integration,
-			"region", region,
+		logger.DebugContext(ctx, "Could not parse account ID from assume role ARN; attempting to resolve AWS account ID from credential scope",
+			"role_arn", params.roleARN,
+			"integration", params.integration,
+			"region", params.region,
+			"error", err,
+		)
+	}
+
+	if params.awsSTSGetter == nil {
+		return fallbackAccountID
+	}
+
+	stsClient, err := params.awsSTSGetter(ctx, params.region, params.awsOpts...)
+	if err != nil {
+		logger.DebugContext(ctx, "Could not create AWS STS client to resolve account ID; using synthetic account grouping key for EC2 permission reporting",
+			"integration", params.integration,
+			"region", params.region,
 			"fallback_account_id", fallbackAccountID,
 			"error", err,
 		)
+		return fallbackAccountID
+	}
+
+	callerIdentity, err := stsClient.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{})
+	if err != nil {
+		logger.DebugContext(ctx, "Could not resolve account ID with AWS STS GetCallerIdentity; using synthetic account grouping key for EC2 permission reporting",
+			"integration", params.integration,
+			"region", params.region,
+			"fallback_account_id", fallbackAccountID,
+			"error", err,
+		)
+		return fallbackAccountID
+	}
+
+	if callerIdentity != nil {
+		if accountID := aws.ToString(callerIdentity.Account); accountID != "" {
+			return accountID
+		}
+		callerARN := aws.ToString(callerIdentity.Arn)
+		if callerARN != "" {
+			parsed, err := arn.Parse(callerARN)
+			if err == nil && parsed.AccountID != "" {
+				return parsed.AccountID
+			}
+			if err != nil {
+				logger.DebugContext(ctx, "Could not parse account ID from AWS caller identity ARN; using synthetic account grouping key for EC2 permission reporting",
+					"caller_arn", callerARN,
+					"integration", params.integration,
+					"region", params.region,
+					"fallback_account_id", fallbackAccountID,
+					"error", err,
+				)
+			}
+		}
 	}
 
 	return fallbackAccountID
@@ -412,6 +483,7 @@ type ec2FetcherConfig struct {
 	EC2ClientGetter        EC2ClientGetter
 	RegionsListerGetter    awsregions.ListerGetter
 	AWSOrganizationsGetter AWSOrganizationsGetter
+	AWSSTSGetter           AWSSTSGetter
 	DiscoveryConfigName    string
 	Logger                 *slog.Logger
 }
@@ -648,7 +720,12 @@ func (f *ec2InstanceFetcher) matcherRegions(ctx context.Context, params matcherR
 	regions, err := awsregions.ListEnabledRegions(ctx, f.RegionsListerGetter, params.awsOpts...)
 	if err != nil {
 		if trace.IsAccessDenied(err) {
-			accountID := accountIDFromRoleARNOrSynthetic(ctx, f.Logger, params.assumeRoleARN, f.Matcher.Integration, "")
+			accountID := accountIDFromCredentialScopeOrSynthetic(ctx, f.Logger, accountIDFromCredentialScopeParams{
+				awsSTSGetter: f.AWSSTSGetter,
+				awsOpts:      params.awsOpts,
+				roleARN:      params.assumeRoleARN,
+				integration:  f.Matcher.Integration,
+			})
 			return nil, trace.Wrap(&EC2IAMPermissionError{
 				Integration:         f.Matcher.Integration,
 				IssueType:           usertasks.AutoDiscoverEC2IssuePermAccountDenied,
@@ -690,7 +767,11 @@ func (f *ec2InstanceFetcher) fetchAccountIDsUnderOrganization(ctx context.Contex
 	if err != nil {
 		convertedErr := libcloudaws.ConvertRequestFailureError(err)
 		if trace.IsAccessDenied(convertedErr) {
-			accountID := accountIDFromRoleARNOrSynthetic(ctx, f.Logger, f.Matcher.AssumeRole.RoleARN, f.Matcher.Integration, "")
+			accountID := accountIDFromCredentialScopeOrSynthetic(ctx, f.Logger, accountIDFromCredentialScopeParams{
+				awsSTSGetter: f.AWSSTSGetter,
+				awsOpts:      awsOpts,
+				integration:  f.Matcher.Integration,
+			})
 			return nil, trace.Wrap(&EC2IAMPermissionError{
 				Integration:         f.Matcher.Integration,
 				IssueType:           usertasks.AutoDiscoverEC2IssuePermOrgDenied,
@@ -846,7 +927,13 @@ func (f *ec2InstanceFetcher) getInstancesInRegion(ctx context.Context, params ge
 		if err != nil {
 			convertedErr := libcloudaws.ConvertRequestFailureError(err)
 			if trace.IsAccessDenied(convertedErr) {
-				accountID := accountIDFromRoleARNOrSynthetic(ctx, f.Logger, params.assumeRole.RoleARN, f.Matcher.Integration, params.region)
+				accountID := accountIDFromCredentialScopeOrSynthetic(ctx, f.Logger, accountIDFromCredentialScopeParams{
+					awsSTSGetter: f.AWSSTSGetter,
+					awsOpts:      params.awsOpts,
+					roleARN:      params.assumeRole.RoleARN,
+					integration:  f.Matcher.Integration,
+					region:       params.region,
+				})
 				return nil, trace.Wrap(&EC2IAMPermissionError{
 					Integration:         f.Matcher.Integration,
 					Region:              params.region,
