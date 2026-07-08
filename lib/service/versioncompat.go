@@ -61,7 +61,7 @@ func isVersionIncompatible(err error) bool {
 // enforceVersionPolicy implements this agent's policy for an incompatible cluster
 // version. Any version incompatibility is fatal unless the --skip-version-check
 // flag is provided. Parse errors fail open so malformed version information
-// advertised by the cluster can't block joining.
+// advertised by the cluster can't block joining or connecting.
 func (process *TeleportProcess) enforceVersionPolicy(ctx context.Context, info joinclient.VersionInfo) error {
 	for _, err := range []error{
 		checkClientMeetsMinVersion(teleport.Version, info.MinClientVersion),

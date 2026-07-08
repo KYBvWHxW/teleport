@@ -19,6 +19,7 @@
 package service
 
 import (
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
@@ -34,17 +35,22 @@ import (
 	"testing"
 
 	"github.com/coreos/go-semver/semver"
+	"github.com/jonboulle/clockwork"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/sync/errgroup"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 
 	"github.com/gravitational/teleport"
+	"github.com/gravitational/teleport/api/client/proto"
 	"github.com/gravitational/teleport/api/client/webclient"
 	apiconstants "github.com/gravitational/teleport/api/constants"
 	apidefaults "github.com/gravitational/teleport/api/defaults"
 	apissh "github.com/gravitational/teleport/api/ssh"
 	"github.com/gravitational/teleport/api/types"
 	"github.com/gravitational/teleport/api/utils/keys"
+	"github.com/gravitational/teleport/lib/auth/authtest"
 	"github.com/gravitational/teleport/lib/auth/state"
 	"github.com/gravitational/teleport/lib/auth/storage"
 	"github.com/gravitational/teleport/lib/backend/memory"
@@ -57,7 +63,9 @@ import (
 	"github.com/gravitational/teleport/lib/utils/log/logtest"
 )
 
-func TestTeleportProcessClientVersionCheck(t *testing.T) {
+// TestTeleportProcessJoinVersionCheck covers version enforcement during a
+// fresh instance's join.
+func TestTeleportProcessJoinVersionCheck(t *testing.T) {
 	t.Parallel()
 
 	// The skew is induced from the server side: the stub advertises requirements
@@ -66,7 +74,7 @@ func TestTeleportProcessClientVersionCheck(t *testing.T) {
 	tooOldMinVersion := semver.Version{Major: teleport.SemVer().Major + 1}.String()
 	tooNewServerVersion := semver.Version{Major: teleport.SemVer().Major - 1}.String()
 
-	newConfig := func(t *testing.T, minClientVersion, serverVersion string) *servicecfg.Config {
+	newProcess := func(t *testing.T, findHandler http.HandlerFunc, skipVersionCheck bool) *TeleportProcess {
 		srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// The skipped-check variant proceeds past the version check and hits
 			// join endpoints this stub doesn't implement before failing.
@@ -74,10 +82,7 @@ func TestTeleportProcessClientVersionCheck(t *testing.T) {
 				http.NotFound(w, r)
 				return
 			}
-			require.NoError(t, json.NewEncoder(w).Encode(webclient.PingResponse{
-				MinClientVersion: minClientVersion,
-				ServerVersion:    serverVersion,
-			}))
+			findHandler(w, r)
 		}))
 		t.Cleanup(srv.Close)
 
@@ -90,35 +95,44 @@ func TestTeleportProcessClientVersionCheck(t *testing.T) {
 		cfg.Auth.Enabled = false
 		cfg.Proxy.Enabled = false
 		cfg.SSH.Enabled = true
-		return cfg
+		cfg.SkipVersionCheck = skipVersionCheck
+
+		process, err := NewTeleport(cfg)
+		require.NoError(t, err)
+		t.Cleanup(func() { _ = process.Close() })
+		return process
+	}
+
+	serveVersions := func(minClientVersion, serverVersion string) http.HandlerFunc {
+		return func(w http.ResponseWriter, r *http.Request) {
+			require.NoError(t, json.NewEncoder(w).Encode(webclient.PingResponse{
+				MinClientVersion: minClientVersion,
+				ServerVersion:    serverVersion,
+			}))
+		}
 	}
 
 	t.Run("client too old stops reconnect retries", func(t *testing.T) {
-		cfg := newConfig(t, tooOldMinVersion, teleport.Version)
-		process, err := NewTeleport(cfg)
-		require.NoError(t, err)
-		t.Cleanup(func() { _ = process.Close() })
-
+		process := newProcess(t, serveVersions(tooOldMinVersion, teleport.Version), false)
 		c, err := process.reconnectToAuthService(types.RoleInstance)
-		var tooOld *clientTooOldError
-		require.ErrorAs(t, err, &tooOld)
+		requireClientTooOld(t, err)
 		require.Nil(t, c)
 	})
 
+	t.Run("client too new stops reconnect retries", func(t *testing.T) {
+		process := newProcess(t, serveVersions(teleport.MinClientSemVer().String(), tooNewServerVersion), false)
+		c, err := process.reconnectToAuthService(types.RoleInstance)
+		requireClientTooNew(t, err)
+		require.Nil(t, c)
+	})
+
+	// The cases below call connectToAuthService, not reconnectToAuthService.
+	// Once past the version check the join fails against the stub with an
+	// ordinary error that reconnectToAuthService would retry forever.
+
 	t.Run("client too old with skip version check bypasses the failure", func(t *testing.T) {
-		cfg := newConfig(t, tooOldMinVersion, teleport.Version)
-		cfg.SkipVersionCheck = true
-
-		process, err := NewTeleport(cfg)
-		require.NoError(t, err)
-		t.Cleanup(func() { _ = process.Close() })
-
-		// Deliberately call connectToAuthService, not reconnectToAuthService.
-		// With the check skipped the join fails against the stub with an
-		// ordinary connection error, which reconnectToAuthService treats as
-		// retryable and would loop on forever. Failing with anything other
-		// than clientTooOldError proves SkipVersionCheck was plumbed through
-		// and bypassed the check.
+		// A non-version error proves SkipVersionCheck was plumbed through.
+		process := newProcess(t, serveVersions(tooOldMinVersion, teleport.Version), true)
 		c, err := process.connectToAuthService(types.RoleInstance)
 		require.Error(t, err)
 		var tooOld *clientTooOldError
@@ -126,39 +140,172 @@ func TestTeleportProcessClientVersionCheck(t *testing.T) {
 		require.Nil(t, c)
 	})
 
-	t.Run("client too new stops reconnect retries", func(t *testing.T) {
-		cfg := newConfig(t, teleport.MinClientSemVer().String(), tooNewServerVersion)
-
-		process, err := NewTeleport(cfg)
-		require.NoError(t, err)
-		t.Cleanup(func() { _ = process.Close() })
-
-		c, err := process.reconnectToAuthService(types.RoleInstance)
-		var tooNew *clientTooNewError
-		require.ErrorAs(t, err, &tooNew)
-		require.Nil(t, c)
-	})
-
-	t.Run("client too new with skip version check bypasses the failure", func(t *testing.T) {
-		cfg := newConfig(t, teleport.MinClientSemVer().String(), tooNewServerVersion)
-		cfg.SkipVersionCheck = true
-
-		process, err := NewTeleport(cfg)
-		require.NoError(t, err)
-		t.Cleanup(func() { _ = process.Close() })
-
-		// Deliberately call connectToAuthService, not reconnectToAuthService.
-		// With the check skipped the join fails against the stub with an
-		// ordinary connection error, which reconnectToAuthService treats as
-		// retryable and would loop on forever. Failing with anything other
-		// than clientTooNewError proves SkipVersionCheck was plumbed through
-		// and bypassed the check.
+	t.Run("compatible version passes the check", func(t *testing.T) {
+		// A non-version error proves the compatible response was accepted.
+		process := newProcess(t, serveVersions(teleport.MinClientSemVer().String(), teleport.Version), false)
 		c, err := process.connectToAuthService(types.RoleInstance)
 		require.Error(t, err)
-		var tooNew *clientTooNewError
-		require.NotErrorAs(t, err, &tooNew)
+		require.False(t, isVersionIncompatible(err), "compatible version should pass the check, got %v", err)
 		require.Nil(t, c)
 	})
+
+	t.Run("find failure skips version check", func(t *testing.T) {
+		// A failed /webapi/find must fail open, not block the connection.
+		process := newProcess(t, func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusInternalServerError)
+		}, false)
+		c, err := process.connectToAuthService(types.RoleInstance)
+		require.Error(t, err)
+		require.False(t, isVersionIncompatible(err), "version check should have been skipped on find failure, got %v", err)
+		require.Nil(t, c)
+	})
+}
+
+// TestEnforceProxyVersionPolicy covers the startup too-old and too-new version
+// checks against the proxy for an already-joined instance reconnecting through
+// a proxy.
+func TestEnforceProxyVersionPolicy(t *testing.T) {
+	t.Parallel()
+
+	tooOldMinVersion := semver.Version{Major: teleport.SemVer().Major + 1}.String()
+	tooNewServerVersion := semver.Version{Major: teleport.SemVer().Major - 1}.String()
+
+	for _, tt := range []struct {
+		name        string
+		handler     http.HandlerFunc
+		assertError require.ErrorAssertionFunc
+	}{
+		{
+			name: "proxy minimum is enforced",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				require.NoError(t, json.NewEncoder(w).Encode(webclient.PingResponse{MinClientVersion: tooOldMinVersion}))
+			},
+			assertError: requireClientTooOld,
+		},
+		{
+			name: "instance newer than proxy is enforced",
+			handler: func(w http.ResponseWriter, _ *http.Request) {
+				require.NoError(t, json.NewEncoder(w).Encode(webclient.PingResponse{ServerVersion: tooNewServerVersion}))
+			},
+			assertError: requireClientTooNew,
+		},
+		{
+			name:        "find failure fails open",
+			handler:     func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusInternalServerError) },
+			assertError: require.NoError,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			srv := httptest.NewTLSServer(tt.handler)
+			t.Cleanup(srv.Close)
+
+			process := &TeleportProcess{
+				Supervisor: &LocalSupervisor{exitContext: t.Context()},
+				Config:     &servicecfg.Config{InsecureMode: true},
+				logger:     logtest.NewLogger(),
+			}
+			proxyAddr := utils.NetAddr{AddrNetwork: "tcp", Addr: strings.TrimPrefix(srv.URL, "https://")}
+			tt.assertError(t, process.enforceProxyVersionPolicy(proxyAddr))
+		})
+	}
+}
+
+// fakeAuthPingServer is a minimal AuthService gRPC server that only answers
+// Ping, letting tests advertise an arbitrary ServerVersion.
+type fakeAuthPingServer struct {
+	proto.UnimplementedAuthServiceServer
+	serverVersion string
+}
+
+func (f *fakeAuthPingServer) Ping(context.Context, *proto.PingRequest) (*proto.PingResponse, error) {
+	return &proto.PingResponse{ServerVersion: f.serverVersion}, nil
+}
+
+// TestGetConnectorVersionCheck covers the startup too-new check for an
+// already-joined instance reconnecting. The fake gRPC server fakes its
+// version while presenting an authtest-issued cert so it passes the
+// connector's TLS check.
+func TestGetConnectorVersionCheck(t *testing.T) {
+	t.Parallel()
+
+	testAuthServer, err := authtest.NewAuthServer(authtest.AuthServerConfig{Dir: t.TempDir()})
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, testAuthServer.Close()) })
+
+	// nodeID is the connecting client. authID backs the fake server's cert: it
+	// plays the auth server, and an auth-role cert carries the
+	// "*.teleport.cluster.local" SAN the connector's TLS check requires (node
+	// certs don't). Both are issued by the same cluster CA the connector trusts.
+	nodeID, err := authtest.NewServerIdentity(testAuthServer.AuthServer, "test-host-id", types.RoleNode)
+	require.NoError(t, err)
+	authID, err := authtest.NewServerIdentity(testAuthServer.AuthServer, "test-auth-id", types.RoleAuth)
+	require.NoError(t, err)
+	serverTLSConfig, err := authID.TLSConfig(nil)
+	require.NoError(t, err)
+
+	// A server one major behind makes this instance too new.
+	tooNewServerVersion := semver.Version{Major: teleport.SemVer().Major - 1}.String()
+
+	for _, tt := range []struct {
+		name          string
+		serverVersion string
+		skipCheck     bool
+		assertError   require.ErrorAssertionFunc
+	}{
+		{
+			name:          "client too new stops connection",
+			serverVersion: tooNewServerVersion,
+			assertError:   requireClientTooNew,
+		},
+		{
+			// Skip must not just suppress the error but yield a working connector.
+			name:          "client too new with skip version check connects",
+			serverVersion: tooNewServerVersion,
+			skipCheck:     true,
+			assertError:   require.NoError,
+		},
+		{
+			name:          "compatible version connects",
+			serverVersion: teleport.Version,
+			assertError:   require.NoError,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			lis, err := net.Listen("tcp", "127.0.0.1:0")
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = lis.Close() })
+
+			grpcServer := grpc.NewServer(grpc.Creds(credentials.NewTLS(serverTLSConfig)))
+			proto.RegisterAuthServiceServer(grpcServer, &fakeAuthPingServer{serverVersion: tt.serverVersion})
+			go grpcServer.Serve(lis)
+			t.Cleanup(grpcServer.Stop)
+
+			// V3 config with an auth address and no proxy routes newClient down
+			// the direct-to-auth path, straight to the fake gRPC server.
+			cfg := servicecfg.MakeDefaultConfig()
+			cfg.Version = defaults.TeleportConfigVersionV3
+			cfg.SkipVersionCheck = tt.skipCheck
+			cfg.SetAuthServerAddress(utils.NetAddr{AddrNetwork: "tcp", Addr: lis.Addr().String()})
+
+			process := &TeleportProcess{
+				Clock:      clockwork.NewRealClock(),
+				Supervisor: &LocalSupervisor{exitContext: t.Context()},
+				Config:     cfg,
+				logger:     logtest.NewLogger(),
+			}
+			// getConnector checks for a reusable instance client for non-instance
+			// roles. A closed ready channel makes that lookup return immediately
+			// instead of blocking, so it falls through to a fresh connection.
+			process.instanceConnectorReady = make(chan struct{})
+			close(process.instanceConnectorReady)
+
+			conn, err := process.getConnector(nodeID, nodeID)
+			if conn != nil {
+				t.Cleanup(func() { _ = conn.Close() })
+			}
+			tt.assertError(t, err)
+		})
+	}
 }
 
 func TestMakeJoinParams_BoundKeypair(t *testing.T) {

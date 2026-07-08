@@ -23,15 +23,12 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"errors"
-	"fmt"
 	"log/slog"
 	"path/filepath"
 	"slices"
 	"strings"
 	"time"
 
-	"github.com/coreos/go-semver/semver"
 	"github.com/google/uuid"
 	"github.com/gravitational/roundtrip"
 	"github.com/gravitational/trace"
@@ -42,6 +39,7 @@ import (
 	"github.com/gravitational/teleport/api/breaker"
 	apiclient "github.com/gravitational/teleport/api/client"
 	"github.com/gravitational/teleport/api/client/proto"
+	"github.com/gravitational/teleport/api/client/webclient"
 	apidefaults "github.com/gravitational/teleport/api/defaults"
 	"github.com/gravitational/teleport/api/ssh"
 	"github.com/gravitational/teleport/api/types"
@@ -98,7 +96,7 @@ func (process *TeleportProcess) reconnectToAuthService(role types.SystemRole) (*
 			// Version incompatibilities (the client is too new or too old for
 			// the cluster) are fatal. Retrying is pointless until the client is
 			// up or downgraded, so surface the error and stop reconnecting.
-			case isVersionCompatibilityError(connectErr):
+			case isVersionIncompatible(connectErr):
 				return nil, trace.Wrap(connectErr)
 			case strings.Contains(connectErr.Error(), auth.TokenExpiredOrNotFound):
 				process.logger.ErrorContext(process.ExitContext(), "Can not join the cluster, the token is expired or not found. Regenerate the token and try again.")
@@ -129,20 +127,6 @@ func (process *TeleportProcess) reconnectToAuthService(role types.SystemRole) (*
 	}
 }
 
-type invalidVersionErr struct {
-	ClusterMajorVersion int64
-	LocalMajorVersion   int64
-}
-
-func (i invalidVersionErr) Error() string {
-	return fmt.Sprintf("Teleport instance is too new. This instance is running v%d. The auth server is running v%d and only supports instances on v%d or v%d. To connect anyway pass the --skip-version-check flag.", i.LocalMajorVersion, i.ClusterMajorVersion, i.ClusterMajorVersion, i.ClusterMajorVersion-1)
-}
-
-func isVersionCompatibilityError(err error) bool {
-	return errors.As(err, &invalidVersionErr{}) ||
-		isVersionIncompatible(err)
-}
-
 func (process *TeleportProcess) assertSystemRoles(rolesToAssert []types.SystemRole) (assertionID string, err error) {
 	assertionID = uuid.New().String()
 	irm := process.getInstanceRoleEventMapping()
@@ -168,32 +152,6 @@ func (process *TeleportProcess) assertSystemRoles(rolesToAssert []types.SystemRo
 	}
 
 	return assertionID, nil
-}
-
-func (process *TeleportProcess) authServerTooOld(resp *proto.PingResponse) error {
-	serverVersion, err := semver.NewVersion(resp.ServerVersion)
-	if err != nil {
-		return trace.BadParameter("failed to parse reported auth server version as semver: %v", err)
-	}
-
-	version := teleport.Version
-	if process.Config.Testing.TeleportVersion != "" {
-		version = process.Config.Testing.TeleportVersion
-	}
-	teleportVersion, err := semver.NewVersion(version)
-	if err != nil {
-		return trace.BadParameter("failed to parse local teleport version as semver: %v", err)
-	}
-
-	if serverVersion.Major < teleportVersion.Major {
-		if process.Config.SkipVersionCheck {
-			process.logger.WarnContext(process.ExitContext(), "This instance is too new. Using a newer major version than the Auth server is unsupported and may impair functionality.", "version", teleportVersion.Major, "auth_version", serverVersion.Major, "supported_versions", []int64{serverVersion.Major, serverVersion.Major - 1})
-			return nil
-		}
-		return trace.Wrap(invalidVersionErr{ClusterMajorVersion: serverVersion.Major, LocalMajorVersion: teleportVersion.Major})
-	}
-
-	return nil
 }
 
 // connectToAuthService attempts to login into the auth servers specified in the
@@ -1437,9 +1395,13 @@ func (process *TeleportProcess) getConnector(clientIdentity, serverIdentity *sta
 		return nil, trace.Wrap(err)
 	}
 
-	// Return a helpful message and don't retry if ping was successful,
-	// but the auth server is too old. Auth is not going to get any younger.
-	if err := process.authServerTooOld(pingResponse); err != nil {
+	// Reject a client newer than the auth server. Retrying won't help until the
+	// cluster is upgraded or this instance is downgraded. This is the only
+	// too-new guard on the direct-to-auth path, and a backstop on the proxy path
+	// where enforceProxyVersionPolicy already checks against the proxy.
+	if err := process.enforceVersionPolicy(process.ExitContext(), joinclient.VersionInfo{
+		ServerVersion: pingResponse.ServerVersion,
+	}); err != nil {
 		return nil, trace.NewAggregate(err, clt.Close())
 	}
 
@@ -1509,6 +1471,13 @@ func (process *TeleportProcess) newClient(connector *Connector) (*authclient.Cli
 		logger.DebugContext(process.ExitContext(), "Attempting to discover reverse tunnel address.")
 		logger.DebugContext(process.ExitContext(), "Attempting to connect to Auth Server through tunnel.")
 
+		// authServers has at least one entry (config validation requires auth_servers
+		// for v1/v2), and the reverse tunnel webclient resolver dials authServers[0],
+		// so that's the endpoint whose policy applies to the tunnel we're opening.
+		if err := process.enforceProxyVersionPolicy(authServers[0]); err != nil {
+			return nil, nil, trace.Wrap(err)
+		}
+
 		tunnelClient, pingResponse, err := process.newClientThroughProxy(tlsConfig, sshClientConfig, connector.Role(), connector.ClusterName(), connector.ClientGetPool)
 		if err != nil {
 			process.logger.ErrorContext(process.ExitContext(), "Node failed to establish connection to Teleport Proxy. We have tried the following endpoints:")
@@ -1533,9 +1502,12 @@ func (process *TeleportProcess) newClient(connector *Connector) (*authclient.Cli
 		if !proxyServer.IsEmpty() {
 			logger := process.logger.With("proxy_server", proxyServer.String())
 			logger.DebugContext(process.ExitContext(), "Attempting to connect to Auth Server through tunnel.")
+			if err := process.enforceProxyVersionPolicy(proxyServer); err != nil {
+				return nil, nil, trace.Wrap(err)
+			}
 			tunnelClient, pingResponse, err := process.newClientThroughProxy(tlsConfig, sshClientConfig, connector.Role(), connector.ClusterName(), connector.ClientGetPool)
 			if err != nil {
-				return nil, nil, trace.Errorf("Failed to connect to Proxy Server through tunnel: %v", err)
+				return nil, nil, trace.Wrap(err, "Failed to connect to Proxy Server through tunnel")
 			}
 
 			logger.DebugContext(process.ExitContext(), "Connected to Auth Server through tunnel.")
@@ -1563,6 +1535,29 @@ func (process *TeleportProcess) breakerConfigForRole(role types.SystemRole) brea
 		return breaker.NoopBreakerConfig()
 	}
 	return servicebreaker.InstrumentBreakerForConnector(role, process.Config.CircuitBreakerConfig)
+}
+
+// enforceProxyVersionPolicy fetches the proxy's advertised version information
+// and delegates to [TeleportProcess.enforceVersionPolicy]. It fails open if
+// the fetch fails, so a transient error can't block connecting.
+func (process *TeleportProcess) enforceProxyVersionPolicy(proxyWebAddr utils.NetAddr) error {
+	findResp, err := webclient.Find(&webclient.Config{
+		ProxyAddr: proxyWebAddr.String(),
+		Context:   process.ExitContext(),
+		Insecure:  process.Config.InsecureMode,
+	})
+	if err != nil {
+		process.logger.WarnContext(process.ExitContext(),
+			"Could not fetch version information from the proxy's web API, skipping the version compatibility check for this connection attempt.",
+			"proxy_addr", proxyWebAddr.String(),
+			"error", err,
+		)
+		return nil
+	}
+	return trace.Wrap(process.enforceVersionPolicy(process.ExitContext(), joinclient.VersionInfo{
+		ServerVersion:    findResp.ServerVersion,
+		MinClientVersion: findResp.MinClientVersion,
+	}))
 }
 
 func (process *TeleportProcess) newClientThroughProxy(tlsConfig *tls.Config, sshConfig ssh.ClientConfig, role types.SystemRole, clusterName string, getClusterCAs func() (*x509.CertPool, error)) (*authclient.Client, *proto.PingResponse, error) {
