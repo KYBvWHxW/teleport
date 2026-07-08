@@ -408,23 +408,6 @@ func (a *ScopedServerWithRoles) hasBuiltinRole(roles ...types.SystemRole) bool {
 // agentOwnedResourceAction authorizes an agent identity to perform actions on its own resources.
 // If the authorization context is not for an agent identity with one of the expected system roles,
 // <false, nil> is returned.
-func (a *ServerWithRoles) agentOwnedResourceAction(ctx context.Context, hostID string, systemRoles ...types.SystemRole) (bool, error) {
-	if !a.hasBuiltinRole(systemRoles...) {
-		return false, nil
-	}
-	serverID, ok := getLocalServerID(a.context.Identity)
-	if !ok {
-		return false, trace.BadParameter("no agent identity after confirming that request context is BuiltinRole (this is a bug)")
-	}
-	if hostID != serverID {
-		return true, trace.AccessDenied("resource host ID %+q does not match agent identity ID %+q", hostID, serverID)
-	}
-	return true, nil
-}
-
-// agentOwnedResourceAction authorizes an agent identity to perform actions on its own resources.
-// If the authorization context is not for an agent identity with one of the expected system roles,
-// <false, nil> is returned.
 func (a *ScopedServerWithRoles) agentOwnedResourceAction(ctx context.Context, hostID string, systemRoles ...types.SystemRole) (bool, error) {
 	if !a.hasBuiltinRole(systemRoles...) {
 		return false, nil
@@ -1161,7 +1144,8 @@ func (a *ScopedServerWithRoles) UpsertNode(ctx context.Context, s types.Server) 
 		isOwner, err := a.agentOwnedResourceAction(ctx, s.GetName(), types.RoleNode)
 		if err != nil {
 			return trace.Wrap(err)
-		} else if isOwner {
+		}
+		if isOwner {
 			return nil
 		}
 		return checker.CheckAccessToRules(&ruleCtx, types.KindNode, types.VerbCreate, types.VerbUpdate)
@@ -1188,7 +1172,7 @@ var ErrNotAgentResourceOwner = &trace.AccessDeniedError{
 func (a *ServerWithRoles) KeepAliveServer(ctx context.Context, handle types.KeepAlive) error {
 	switch handle.GetType() {
 	case constants.KeepAliveNode:
-		isOwner, err := a.agentOwnedResourceAction(ctx, handle.Name, types.RoleNode)
+		isOwner, err := a.ScopedServerWithRoles().agentOwnedResourceAction(ctx, handle.Name, types.RoleNode)
 		if !isOwner {
 			return trace.Wrap(ErrNotAgentResourceOwner)
 		} else if err != nil {
@@ -1199,7 +1183,7 @@ func (a *ServerWithRoles) KeepAliveServer(ctx context.Context, handle types.Keep
 		if hostID == "" { // DELETE IN 9.0. Legacy app server is heartbeating back.
 			hostID = handle.Name
 		}
-		isOwner, err := a.agentOwnedResourceAction(ctx, hostID, types.RoleApp, types.RoleOkta)
+		isOwner, err := a.ScopedServerWithRoles().agentOwnedResourceAction(ctx, hostID, types.RoleApp, types.RoleOkta)
 		if !isOwner {
 			return trace.Wrap(ErrNotAgentResourceOwner)
 		} else if err != nil {
@@ -1209,14 +1193,14 @@ func (a *ServerWithRoles) KeepAliveServer(ctx context.Context, handle types.Keep
 		// There can be multiple database servers per host so they send their
 		// host ID in a separate field because unlike SSH nodes the resource
 		// name cannot be the host ID.
-		isOwner, err := a.agentOwnedResourceAction(ctx, handle.HostID, types.RoleDatabase)
+		isOwner, err := a.ScopedServerWithRoles().agentOwnedResourceAction(ctx, handle.HostID, types.RoleDatabase)
 		if !isOwner {
 			return trace.Wrap(ErrNotAgentResourceOwner)
 		} else if err != nil {
 			return trace.Wrap(err)
 		}
 	case constants.KeepAliveWindowsDesktopService:
-		isOwner, err := a.agentOwnedResourceAction(ctx, handle.Name, types.RoleWindowsDesktop)
+		isOwner, err := a.ScopedServerWithRoles().agentOwnedResourceAction(ctx, handle.Name, types.RoleWindowsDesktop)
 		if !isOwner {
 			return trace.Wrap(ErrNotAgentResourceOwner)
 		} else if err != nil {
@@ -1225,14 +1209,14 @@ func (a *ServerWithRoles) KeepAliveServer(ctx context.Context, handle types.Keep
 	case constants.KeepAliveKube:
 		// Legacy kube proxy can heartbeat kube servers from the proxy itself so
 		// we need to check if the host has the Kube or Proxy role.
-		isOwner, err := a.agentOwnedResourceAction(ctx, handle.HostID, types.RoleKube, types.RoleProxy)
+		isOwner, err := a.ScopedServerWithRoles().agentOwnedResourceAction(ctx, handle.HostID, types.RoleKube, types.RoleProxy)
 		if !isOwner {
 			return trace.Wrap(ErrNotAgentResourceOwner)
 		} else if err != nil {
 			return trace.Wrap(err)
 		}
 	case constants.KeepAliveDatabaseService:
-		isOwner, err := a.agentOwnedResourceAction(ctx, handle.Name, types.RoleDatabase)
+		isOwner, err := a.ScopedServerWithRoles().agentOwnedResourceAction(ctx, handle.Name, types.RoleDatabase)
 		if !isOwner {
 			return trace.Wrap(ErrNotAgentResourceOwner)
 		} else if err != nil {
@@ -6264,7 +6248,7 @@ func (a *ServerWithRoles) GetDatabaseServers(ctx context.Context, namespace stri
 
 // UpsertDatabaseServer creates or updates a new database proxy server.
 func (a *ServerWithRoles) UpsertDatabaseServer(ctx context.Context, server types.DatabaseServer) (*types.KeepAlive, error) {
-	isOwner, err := a.agentOwnedResourceAction(ctx, server.GetHostID(), types.RoleDatabase)
+	isOwner, err := a.ScopedServerWithRoles().agentOwnedResourceAction(ctx, server.GetHostID(), types.RoleDatabase)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
@@ -6281,7 +6265,7 @@ func (a *ServerWithRoles) UpsertDatabaseServer(ctx context.Context, server types
 
 // DeleteDatabaseServer removes the specified database proxy server.
 func (a *ServerWithRoles) DeleteDatabaseServer(ctx context.Context, namespace, hostID, name string) error {
-	isOwner, err := a.agentOwnedResourceAction(ctx, hostID, types.RoleDatabase)
+	isOwner, err := a.ScopedServerWithRoles().agentOwnedResourceAction(ctx, hostID, types.RoleDatabase)
 	if err != nil {
 		return trace.Wrap(err)
 	}
@@ -6303,7 +6287,7 @@ func (a *ServerWithRoles) DeleteAllDatabaseServers(ctx context.Context, namespac
 
 // UpsertDatabaseService creates or updates a new DatabaseService resource.
 func (a *ServerWithRoles) UpsertDatabaseService(ctx context.Context, service types.DatabaseService) (*types.KeepAlive, error) {
-	isOwner, err := a.agentOwnedResourceAction(ctx, service.GetName(), types.RoleDatabase)
+	isOwner, err := a.ScopedServerWithRoles().agentOwnedResourceAction(ctx, service.GetName(), types.RoleDatabase)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
@@ -6325,7 +6309,7 @@ func (a *ServerWithRoles) DeleteAllDatabaseServices(ctx context.Context) error {
 
 // DeleteDatabaseService removes a specific DatabaseService resource.
 func (a *ServerWithRoles) DeleteDatabaseService(ctx context.Context, name string) error {
-	isOwner, err := a.agentOwnedResourceAction(ctx, name, types.RoleDatabase)
+	isOwner, err := a.ScopedServerWithRoles().agentOwnedResourceAction(ctx, name, types.RoleDatabase)
 	if err != nil {
 		return trace.Wrap(err)
 	}
@@ -6467,7 +6451,7 @@ func (a *ServerWithRoles) GetApplicationServers(ctx context.Context, namespace s
 
 // UpsertApplicationServer registers an application server.
 func (a *ServerWithRoles) UpsertApplicationServer(ctx context.Context, server types.AppServer) (*types.KeepAlive, error) {
-	isOwner, err := a.agentOwnedResourceAction(ctx, server.GetHostID(), types.RoleApp)
+	isOwner, err := a.ScopedServerWithRoles().agentOwnedResourceAction(ctx, server.GetHostID(), types.RoleApp)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
@@ -6484,7 +6468,7 @@ func (a *ServerWithRoles) UpsertApplicationServer(ctx context.Context, server ty
 
 // DeleteApplicationServer deletes specified application server.
 func (a *ServerWithRoles) DeleteApplicationServer(ctx context.Context, namespace, hostID, name string) error {
-	isOwner, err := a.agentOwnedResourceAction(ctx, hostID, types.RoleApp)
+	isOwner, err := a.ScopedServerWithRoles().agentOwnedResourceAction(ctx, hostID, types.RoleApp)
 	if err != nil {
 		return trace.Wrap(err)
 	}
@@ -6906,7 +6890,7 @@ func (a *ScopedServerWithRoles) GetKubernetesServers(ctx context.Context) ([]typ
 // UpsertKubernetesServer creates or updates a Server representing a teleport
 // kubernetes server.
 func (a *ServerWithRoles) UpsertKubernetesServer(ctx context.Context, s types.KubeServer) (*types.KeepAlive, error) {
-	isOwner, err := a.agentOwnedResourceAction(ctx, s.GetHostID(), types.RoleKube)
+	isOwner, err := a.ScopedServerWithRoles().agentOwnedResourceAction(ctx, s.GetHostID(), types.RoleKube)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
@@ -6926,7 +6910,7 @@ func (a *ServerWithRoles) UpsertKubernetesServer(ctx context.Context, s types.Ku
 
 // DeleteKubernetesServer deletes specified kubernetes server.
 func (a *ServerWithRoles) DeleteKubernetesServer(ctx context.Context, hostID, name string) error {
-	isOwner, err := a.agentOwnedResourceAction(ctx, hostID, types.RoleKube)
+	isOwner, err := a.ScopedServerWithRoles().agentOwnedResourceAction(ctx, hostID, types.RoleKube)
 	if err != nil {
 		return trace.Wrap(err)
 	}
@@ -7842,7 +7826,7 @@ func (a *ServerWithRoles) GetWindowsDesktopService(ctx context.Context, name str
 
 // UpsertWindowsDesktopService creates or updates a new windows desktop service.
 func (a *ServerWithRoles) UpsertWindowsDesktopService(ctx context.Context, s types.WindowsDesktopService) (*types.KeepAlive, error) {
-	isOwner, err := a.agentOwnedResourceAction(ctx, s.GetName(), types.RoleWindowsDesktop)
+	isOwner, err := a.ScopedServerWithRoles().agentOwnedResourceAction(ctx, s.GetName(), types.RoleWindowsDesktop)
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
@@ -7856,7 +7840,7 @@ func (a *ServerWithRoles) UpsertWindowsDesktopService(ctx context.Context, s typ
 
 // DeleteWindowsDesktopService removes the specified windows desktop service.
 func (a *ServerWithRoles) DeleteWindowsDesktopService(ctx context.Context, name string) error {
-	isOwner, err := a.agentOwnedResourceAction(ctx, name, types.RoleWindowsDesktop)
+	isOwner, err := a.ScopedServerWithRoles().agentOwnedResourceAction(ctx, name, types.RoleWindowsDesktop)
 	if err != nil {
 		return trace.Wrap(err)
 	}
@@ -7961,7 +7945,7 @@ func (a *ServerWithRoles) UpdateWindowsDesktop(ctx context.Context, s types.Wind
 
 // UpsertWindowsDesktop updates a windows desktop resource, creating it if it doesn't exist.
 func (a *ServerWithRoles) UpsertWindowsDesktop(ctx context.Context, s types.WindowsDesktop) error {
-	if isOwner, err := a.agentOwnedResourceAction(ctx, s.GetHostID(), types.RoleWindowsDesktop); err != nil {
+	if isOwner, err := a.ScopedServerWithRoles().agentOwnedResourceAction(ctx, s.GetHostID(), types.RoleWindowsDesktop); err != nil {
 		return trace.Wrap(err)
 	} else if isOwner {
 		return a.authServer.UpsertWindowsDesktop(ctx, s)
@@ -8001,7 +7985,7 @@ func (a *ServerWithRoles) UpsertWindowsDesktop(ctx context.Context, s types.Wind
 // Passing an empty host ID will not trigger "delete all" behavior. To delete
 // all desktops, use DeleteAllWindowsDesktops.
 func (a *ServerWithRoles) DeleteWindowsDesktop(ctx context.Context, hostID, name string) error {
-	if isOwner, err := a.agentOwnedResourceAction(ctx, hostID, types.RoleWindowsDesktop); err != nil {
+	if isOwner, err := a.ScopedServerWithRoles().agentOwnedResourceAction(ctx, hostID, types.RoleWindowsDesktop); err != nil {
 		return trace.Wrap(err)
 	} else if isOwner {
 		return a.authServer.DeleteWindowsDesktop(ctx, hostID, name)
