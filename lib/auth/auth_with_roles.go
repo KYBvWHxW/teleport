@@ -6879,6 +6879,9 @@ func (a *ServerWithRoles) UpsertKubernetesServer(ctx context.Context, s types.Ku
 	if s.GetScope() != "" {
 		return nil, trace.BadParameter("scoped kubernetes server must register a control stream")
 	}
+	if a.context.Identity.GetIdentity().GetAgentScope() != "" {
+		return nil, trace.Wrap(services.ErrScopedIdentity, "upserting kubernetes server outside of control stream")
+	}
 	return a.authServer.UpsertKubernetesServer(ctx, s)
 }
 
@@ -6891,6 +6894,9 @@ func (a *ServerWithRoles) DeleteKubernetesServer(ctx context.Context, hostID, na
 		if err := a.authorizeAction(types.KindKubeServer, types.VerbDelete); err != nil {
 			return trace.Wrap(err)
 		}
+	}
+	if a.context.Identity.GetIdentity().GetAgentScope() != "" {
+		return trace.Wrap(services.ErrScopedIdentity, "deleting kubernetes server outside of control stream")
 	}
 	return a.authServer.DeleteKubernetesServer(ctx, hostID, name)
 }
