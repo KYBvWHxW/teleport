@@ -129,6 +129,9 @@ type Config struct {
 	// Scoped represents if the controller reconciles scoped resources.
 	// Scoped controllers always run.
 	// Unscoped controllers don't run when the controller runs in scoped mode.
+	// TODO(hugoShaka): Separate scoped config to distinguish is a resource scoped from
+	// is the operator itself scoped.
+	// Deprecated: Don't rely on this it is overloaded and will be refactored later.
 	Scoped bool
 	// CheckFeatures checks if the reconciler should run against the cluster given its features.
 	// This is used to disable controllers if the cluster doesn't support their resource (e.g.

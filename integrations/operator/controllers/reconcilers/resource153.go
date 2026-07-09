@@ -125,7 +125,7 @@ func NewTeleportScopedResource153Reconciler[T ScopedResource153, K KubernetesCR[
 		resourceClient: resourceClient,
 		gvk:            gvk,
 		adapter:        ScopedResource153Adapter[T]{},
-		scoped:         config.Scoped,
+		scoped:         true,
 		teleportKind:   teleportKind,
 		checkFeatures:  checkFeatures,
 	}
