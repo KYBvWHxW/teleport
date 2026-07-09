@@ -43,12 +43,14 @@ type SQLAdminClient interface {
 	// GetDatabaseInstance returns database instance details for the project/instance
 	// configured in a session.
 	GetDatabaseInstance(ctx context.Context, db types.Database) (*sqladmin.DatabaseInstance, error)
+	// ListDatabaseInstances lists all Cloud SQL instances in the given project.
+	ListDatabaseInstances(ctx context.Context, projectID string) ([]*sqladmin.DatabaseInstance, error)
 	// GenerateEphemeralCert returns a new PEM-encoded client certificate for
 	// the project/instance configured in a session.
 	GenerateEphemeralCert(ctx context.Context, db types.Database, certExpiry time.Time, pubKey crypto.PublicKey) (string, error)
 }
 
-// NewGCPSQLAdminClient returns a GCPSQLAdminClient interface wrapping sqladmin.Service.
+// NewSQLAdminClient returns a SQLAdminClient interface wrapping sqladmin.Service.
 func NewSQLAdminClient(ctx context.Context) (SQLAdminClient, error) {
 	service, err := sqladmin.NewService(ctx)
 	if err != nil {
@@ -95,6 +97,20 @@ func (g *gcpSQLAdminClient) GetDatabaseInstance(ctx context.Context, db types.Da
 		return nil, trace.Wrap(convertAPIError(err))
 	}
 	return dbi, nil
+}
+
+// ListDatabaseInstances lists all Cloud SQL instances in the given project,
+// following pagination.
+func (g *gcpSQLAdminClient) ListDatabaseInstances(ctx context.Context, projectID string) ([]*sqladmin.DatabaseInstance, error) {
+	var instances []*sqladmin.DatabaseInstance
+	err := g.service.Instances.List(projectID).Pages(ctx, func(page *sqladmin.InstancesListResponse) error {
+		instances = append(instances, page.Items...)
+		return nil
+	})
+	if err != nil {
+		return nil, trace.Wrap(convertAPIError(err))
+	}
+	return instances, nil
 }
 
 // GenerateEphemeralCert returns a new client certificate created using the
