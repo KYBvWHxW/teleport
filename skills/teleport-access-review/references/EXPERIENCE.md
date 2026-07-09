@@ -193,7 +193,9 @@ if jq -e '(.warnings // []) | any(test("activity unavailable"))' "$f" >/dev/null
 else
   # Standing access never used in the window — candidates to revoke, with the grantor
   # to act on (grantors[0] is the primary grantor, i.e. the one backing the standing
-  # level). Missing `activity` means zero events here, so `// 0` is correct:
+  # level). Missing `activity` means zero events here, so `// 0` is correct. `sub_kind`
+  # is printed because activity is session-based: a zero on a non-session kind is "not
+  # tracked", not "unused" — see the caveat below.
   jq -r '.identities[].resources[]
          | select(.level=="standing" and (.activity.count // 0)==0 and (.temporary|not))
          | [(.resource.alias // .resource.name), .resource.sub_kind, (.grantors[0].node | .alias // .name // "?")] | @tsv' "$f"
@@ -208,6 +210,15 @@ Present it as a concrete table: resource, kind, grantor, used/last-used — so t
 reviewer can prioritise. Skip `temporary` (`*`) access: it self-expires, so
 there's no point trimming it. If you can tell sensitive resources (crown jewels,
 specific prod accounts) from low-risk ones, surface those first.
+
+**Activity only sees session-based usage.** The count comes from Teleport
+session-start events, so it covers resources reached through a session (SSH,
+database, Kubernetes, app, desktop). A grant on a resource used outside a session
+— AWS/S3, Okta, GitLab, other synced Access Graph resources — shows zero activity
+even in active use, so it lands in the revoke list as a false positive. Only call
+session-based kinds dormant on activity alone; for the rest (the `sub_kind`
+column), confirm out-of-band (`tctl investigate` or the provider's own logs)
+before recommending revocation.
 
 ### "What over-privileged access exists via the junior-dev role?"
 

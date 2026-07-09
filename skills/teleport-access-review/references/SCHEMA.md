@@ -54,6 +54,12 @@ Activity Center; if the activity lookup fails, `activity` is omitted and a
 `warnings` entry (`activity unavailable: …`) is added — the access decision is
 still returned.
 
+Counts come from **session-start audit events**, so activity only covers
+resources reached through a Teleport session (SSH, database, Kubernetes, app,
+desktop). Resources used outside a session — AWS/S3, Okta, GitLab, other synced
+Access Graph resources — never increment it, so their `activity` stays absent no
+matter the real use. There, absent means "not tracked", not "unused".
+
 ## Node
 
 Used for identities, resources, and grantors.
@@ -64,7 +70,7 @@ Used for identities, resources, and grantors.
 | `name`      | string | The node's name **as stored** — what `=`/`IN` match against (exactly, case-sensitively).                                                                 |
 | `alias`     | string | Optional friendly alias; also matched by name filters.                                                                                                   |
 | `kind`      | string | `identity`, `resource`, `identity_group`, `resource_group`, `sub_resource`, …                                                                            |
-| `sub_kind`  | string | e.g. identity → `user`/`bot`; resource → `ssh`/`db`/`app`/`kube`/`s3`; group → `role`/`access_list`/`access_request`. The text `Kind` columns show this. |
+| `sub_kind`  | string | e.g. identity → `user`/`bot`; resource → `ssh`/`database`/`kubernetes`/`app`/`desktop`; group → `role`/`access_list`/`access_request`. The text `Kind` columns show this. |
 | `source`    | string | Origin system, e.g. `TELEPORT`, `OKTA`.                                                                                                                  |
 | `origin`    | string | Finer origin, e.g. `teleport_user`.                                                                                                                      |
 | `temporary` | bool   | For a grantor, `true` if created by an access request (self-expiring).                                                                                   |
