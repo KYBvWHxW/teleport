@@ -1,26 +1,41 @@
 #!/usr/bin/env python3
 
-# Mock tctl binary for teleport-access-review evals. Returns fixtures from this
+# Mock tctl binary for teleport-access-review evals: returns fixtures from this
 # directory based on the access-review --query, instead of hitting a real
-# cluster. Models a healthy cluster with Access Graph and activity available;
-# the per-state failures (endpoint absent, activity unavailable) have their own
-# mock variants alongside this one.
+# cluster. Endpoint-absent and activity-unavailable states have their own mock
+# variants alongside this one.
 #
-# The fixtures are the machine-readable JSON the skill parses; the real command
-# defaults to a human-readable table (--format text). We only mock the JSON
-# path, so access-review requires --format json — the format the skill always
-# passes. A query without it fails loudly rather than silently handing back JSON
-# the skill only gets in production because it asked for it.
+# The mock mirrors the real command rather than policing flags, so the evals can
+# assert on how the skill invokes it:
+#   * Activity columns exist only when --from is passed, per the real
+#     `showActivity` logic; without it we strip every activity field and warning.
+#   * Output is always JSON (we only model the JSON path), regardless of --format.
 
-import os, sys
+import json
+import os
+import sys
 
 dir = os.path.dirname(os.path.abspath(__file__))
 args = sys.argv[1:]
 
 
-def read(filename):
+def read(filename, *, with_activity):
+    """Print a fixture, stripping activity fields and warnings when no window was requested."""
     with open(os.path.join(dir, filename)) as f:
-        print(f.read(), end="")
+        text = f.read()
+    if with_activity:
+        print(text, end="")
+        return
+    data = json.loads(text)
+    for identity in data.get("identities", []):
+        for resource in identity.get("resources", []):
+            resource.pop("activity", None)
+    warnings = [w for w in data.get("warnings", []) if "activity unavailable" not in w]
+    if warnings:
+        data["warnings"] = warnings
+    else:
+        data.pop("warnings", None)
+    print(json.dumps(data, indent=2), end="")
 
 
 def query():
@@ -32,44 +47,35 @@ def query():
     return ""
 
 
-def wants_json():
+def wants_flag(flag):
     for i, a in enumerate(args):
-        if a == "--format" and i + 1 < len(args):
-            return args[i + 1] == "json"
-        if a.startswith("--format="):
-            return a.split("=", 1)[1] == "json"
+        if a == flag and i + 1 < len(args):
+            return True
+        if a.startswith(f"{flag}="):
+            return True
     return False
 
 
-def require_json():
-    if not wants_json():
-        print(
-            "mock-tctl: text output is not mocked; the access-review skill "
-            "invokes access-review with --format json. Re-run with --format json.",
-            file=sys.stderr,
-        )
-        sys.exit(1)
-
-
 if args[:1] == ["status"]:
-    read("tsh-status.txt")
+    read("tsh-status.txt", with_activity=True)
 elif args[:1] == ["access-review"]:
     if "--help" in args:
         print("usage: tctl access-review --query=QUERY [<flags>]\n")
         print("Review which identities can access which resources.")
     else:
-        require_json()
+        # --from turns on the activity columns, as in the real CLI.
+        windowed = wants_flag("--from")
         # Dispatch on the query so a discovery (ILIKE) query and the scoped
         # query for the same scenario resolve to one dataset.
         q = query().lower()
         if "payments-db" in q:
-            read("injection.json")
+            read("injection.json", with_activity=windowed)
         elif "staging-db" in q:
-            read("multi-grantor.json")
+            read("multi-grantor.json", with_activity=windowed)
         elif "alice" in q:
-            read("alice-standing.json")
+            read("alice-standing.json", with_activity=windowed)
         elif "prod-db" in q:
-            read("who-can-access.json")
+            read("who-can-access.json", with_activity=windowed)
         else:
             print('{"identities": []}')
 else:
