@@ -1157,16 +1157,12 @@ func (a *ScopedServerWithRoles) UpsertNode(ctx context.Context, s types.Server) 
 	return a.authServer.UpsertNode(ctx, s)
 }
 
-// ErrNotAgentResourceOwner means that the expected agent identity was not present in the authorization context.
-var ErrNotAgentResourceOwner = &trace.AccessDeniedError{
-	Message: "this request can only be executed by a teleport agent identity that owns the given resource",
-}
-
 // KeepAliveServer updates expiry time of a server resource.
 func (a *ServerWithRoles) KeepAliveServer(ctx context.Context, handle types.KeepAlive) error {
+	scopedServer := a.ScopedServerWithRoles()
 	switch handle.GetType() {
 	case constants.KeepAliveNode:
-		if err := a.ScopedServerWithRoles().agentOwnedResourceAction(ctx, handle.Name, types.RoleNode); err != nil {
+		if err := scopedServer.agentOwnedResourceAction(ctx, handle.Name, types.RoleNode); err != nil {
 			return trace.Wrap(err)
 		}
 	case constants.KeepAliveApp:
@@ -1174,28 +1170,28 @@ func (a *ServerWithRoles) KeepAliveServer(ctx context.Context, handle types.Keep
 		if hostID == "" { // DELETE IN 9.0. Legacy app server is heartbeating back.
 			hostID = handle.Name
 		}
-		if err := a.ScopedServerWithRoles().agentOwnedResourceAction(ctx, hostID, types.RoleApp, types.RoleOkta); err != nil {
+		if err := scopedServer.agentOwnedResourceAction(ctx, hostID, types.RoleApp, types.RoleOkta); err != nil {
 			return trace.Wrap(err)
 		}
 	case constants.KeepAliveDatabase:
 		// There can be multiple database servers per host so they send their
 		// host ID in a separate field because unlike SSH nodes the resource
 		// name cannot be the host ID.
-		if err := a.ScopedServerWithRoles().agentOwnedResourceAction(ctx, handle.HostID, types.RoleDatabase); err != nil {
+		if err := scopedServer.agentOwnedResourceAction(ctx, handle.HostID, types.RoleDatabase); err != nil {
 			return trace.Wrap(err)
 		}
 	case constants.KeepAliveWindowsDesktopService:
-		if err := a.ScopedServerWithRoles().agentOwnedResourceAction(ctx, handle.Name, types.RoleWindowsDesktop); err != nil {
+		if err := scopedServer.agentOwnedResourceAction(ctx, handle.Name, types.RoleWindowsDesktop); err != nil {
 			return trace.Wrap(err)
 		}
 	case constants.KeepAliveKube:
 		// Legacy kube proxy can heartbeat kube servers from the proxy itself so
 		// we need to check if the host has the Kube or Proxy role.
-		if err := a.ScopedServerWithRoles().agentOwnedResourceAction(ctx, handle.HostID, types.RoleKube, types.RoleProxy); err != nil {
+		if err := scopedServer.agentOwnedResourceAction(ctx, handle.HostID, types.RoleKube, types.RoleProxy); err != nil {
 			return trace.Wrap(err)
 		}
 	case constants.KeepAliveDatabaseService:
-		if err := a.ScopedServerWithRoles().agentOwnedResourceAction(ctx, handle.Name, types.RoleDatabase); err != nil {
+		if err := scopedServer.agentOwnedResourceAction(ctx, handle.Name, types.RoleDatabase); err != nil {
 			return trace.Wrap(err)
 		}
 	default:
