@@ -1149,7 +1149,7 @@ func (a *ScopedServerWithRoles) UpsertNode(ctx context.Context, s types.Server) 
 
 	agentScope := a.scopedContext.Identity.GetIdentity().GetAgentScope()
 	if nodeScope := s.GetScope(); agentScope != "" {
-		if nodeScope != agentScope {
+		if scopes.Compare(nodeScope, agentScope) != scopes.Equivalent {
 			return nil, trace.AccessDenied("node scope %+q does not match agent identity scope %+q", nodeScope, agentScope)
 		}
 	}
