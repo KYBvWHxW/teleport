@@ -5,6 +5,12 @@
 # cluster. Models a healthy cluster with Access Graph and activity available;
 # the per-state failures (endpoint absent, activity unavailable) have their own
 # mock variants alongside this one.
+#
+# The fixtures are the machine-readable JSON the skill parses; the real command
+# defaults to a human-readable table (--format text). We only mock the JSON
+# path, so access-review requires --format json — the format the skill always
+# passes. A query without it fails loudly rather than silently handing back JSON
+# the skill only gets in production because it asked for it.
 
 import os, sys
 
@@ -26,6 +32,25 @@ def query():
     return ""
 
 
+def wants_json():
+    for i, a in enumerate(args):
+        if a == "--format" and i + 1 < len(args):
+            return args[i + 1] == "json"
+        if a.startswith("--format="):
+            return a.split("=", 1)[1] == "json"
+    return False
+
+
+def require_json():
+    if not wants_json():
+        print(
+            "mock-tctl: text output is not mocked; the access-review skill "
+            "invokes access-review with --format json. Re-run with --format json.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
 if args[:1] == ["status"]:
     read("tsh-status.txt")
 elif args[:1] == ["access-review"]:
@@ -33,6 +58,7 @@ elif args[:1] == ["access-review"]:
         print("usage: tctl access-review --query=QUERY [<flags>]\n")
         print("Review which identities can access which resources.")
     else:
+        require_json()
         # Dispatch on the query so a discovery (ILIKE) query and the scoped
         # query for the same scenario resolve to one dataset.
         q = query().lower()

@@ -3,6 +3,9 @@
 # Mock tctl binary for teleport-access-review evals, simulating a cluster where
 # Identity Activity Center is unavailable: access-review returns the access
 # paths but no activity, plus an "activity unavailable" warning.
+#
+# Like the base mock, only the JSON path is mocked, so access-review requires
+# --format json — the format the skill always passes.
 
 import os, sys
 
@@ -15,6 +18,25 @@ def read(filename):
         print(f.read(), end="")
 
 
+def wants_json():
+    for i, a in enumerate(args):
+        if a == "--format" and i + 1 < len(args):
+            return args[i + 1] == "json"
+        if a.startswith("--format="):
+            return a.split("=", 1)[1] == "json"
+    return False
+
+
+def require_json():
+    if not wants_json():
+        print(
+            "mock-tctl: text output is not mocked; the access-review skill "
+            "invokes access-review with --format json. Re-run with --format json.",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
 if args[:1] == ["status"]:
     read("tsh-status.txt")
 elif args[:1] == ["access-review"]:
@@ -22,6 +44,7 @@ elif args[:1] == ["access-review"]:
         print("usage: tctl access-review --query=QUERY [<flags>]\n")
         print("Review which identities can access which resources.")
     else:
+        require_json()
         read("no-activity.json")
 else:
     print(f"mock-tctl: unrecognized command: {' '.join(args)}", file=sys.stderr)
