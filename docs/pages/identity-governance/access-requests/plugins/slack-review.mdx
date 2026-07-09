@@ -64,7 +64,7 @@ Then, under **App-Level Tokens**, click **Generate Token and Scopes**. Set a nam
 and add the `connections:write` scope. This will provide the plugin with the necessary permissions
 to receive user interactions from Slack.
 
-Copy the generated app-level token for use in a later step: <Var name="xapp-..." />
+Copy the generated app-level token for use in a later step.
 
 ### Enable Socket Mode setting
 
@@ -159,19 +159,21 @@ from an Identity Provider/SSO connector while others are local Teleport users.
 Create a Teleport user with a username set as <Var name="alice@example.com" />
 and assigned the role `access-reviewer`.
 
+We will assign this reviewer user with a Teleport trait named <Var name="slack_uid" />
+that holds the value of the Slack user's ID: <Var name="U123456789" />.
+The trait name can also be configured in the plugin configuration step.
+
+<Tabs>
+<TabItem label="Local users">
+
+Create a local user:
+
 ```code
 $ tctl users add <Var name="alice@example.com" /> --roles=access-reviewer
 ```
 
 Visit the invitation URL that is printed and login as <Var name="alice@example.com" /> for the first time,
 registering credentials as configured for your Teleport cluster.
-
-We will assign the reviewer user with a Teleport trait named <Var name="slack_uid" />
-that holds the value of the Slack user's ID: <Var name="U123456789" />.
-The trait name can also be configured in the plugin configuration step.
-
-<Tabs>
-<TabItem label="Local users">
 
 Create a file called `user-traits.yaml` with the following content:
 
@@ -186,7 +188,7 @@ spec:
     <Var name="slack_uid" />: ['<Var name="U123456789" />']
 ```
 
-Update the newly created user for <Var name="alice@example.com" />:
+Update the newly created user:
 
 ```code
 $ tctl create -f user-traits.yaml
@@ -312,17 +314,17 @@ Start the plugin by following the instructions below.
 <Tabs>
 <TabItem label="Executable">
 ```code
-$ teleport-slack start
+$ teleport-slack start --config teleport-slack.toml
 ```
 </TabItem>
 <TabItem label="Docker">
 ```code
-$ docker run -v <path-to-config>:/etc/teleport-slack.toml public.ecr.aws/gravitational/teleport-plugin-slack:(=teleport.version=) start
+$ docker run -v teleport-slack.toml:/etc/teleport-slack.toml public.ecr.aws/gravitational/teleport-plugin-slack:(=teleport.version=) start
 ```
 </TabItem>
 <TabItem label="Helm Chart">
 ```code
-$ helm upgrade --install teleport-plugin-slack teleport/teleport-plugin-slack --values teleport-slack-helm.yaml
+$ helm upgrade --install teleport-plugin-slack teleport/teleport-plugin-slack --values teleport-plugin-slack-values.yaml
 ```
 
 To inspect the plugin's logs, use the following command:
@@ -332,7 +334,7 @@ $ kubectl logs deploy/teleport-plugin-slack
 ```
 
 Debug logs can be enabled by setting `log.severity` to `DEBUG` in
-`teleport-slack-helm.yaml` and executing the `helm upgrade ...` command
+`teleport-plugin-slack-values.yaml` and executing the `helm upgrade ...` command
 above again. Then you can restart the plugin with the following command:
 
 ```code
@@ -376,7 +378,24 @@ The `submitted_by` field represents the plugin identity that submitted on behalf
 <details>
 <summary>Audit log</summary>
 
-![Audit log for Access Request review](https://goteleport.com/_uploads/slack_review_audit_log_628108813c.png)
+```json
+{
+  "RequestedResourceAccessIDs": null,
+  "cluster_name": "kevin18.cloud.gravitational.io",
+  "code": "T5002I",
+  "ei": 0,
+  "event": "access_request.review",
+  "expires": "2026-06-18T11:26:07Z",
+  "id": "019ed7ee-e581-7644-81be-dffd1229028c",
+  "max_duration": "2026-06-18T11:26:07Z",
+  "proposed_state": "APPROVED",
+  "reviewer": "kevin.shi@goteleport.com",
+  "state": "APPROVED",
+  "submitted_by": "access-plugin-with-review",
+  "time": "2026-06-17T23:34:06.274Z",
+  "uid": "8912fd42-d1f4-4847-9621-fb7313e0ef08"
+}
+```
 
 </details>
 
