@@ -52,9 +52,6 @@ import (
 {{- if .Namespaced }}
 	"github.com/gravitational/teleport/api/defaults"
 {{- end }}
-{{- if .Scoped }}
-	"github.com/gravitational/teleport/lib/scopes"
-{{- end }}
 
 	{{ schemaImport . }}
 )
@@ -160,16 +157,10 @@ func (r resourceTeleport{{.Name}}) Create(ctx context.Context, req tfsdk.CreateR
 	idPrefix := {{.VarName}}Resource.{{ join (slice (split .IDPrefix ".") 1) "." }}
 	{{ end -}}
 	id := {{.VarName}}Resource.Metadata.Name
-	{{- if .Scoped }}
-	scope := {{.VarName}}Resource.GetScope()
-	{{- end }}
 {{- if .RequestWrapper}}
 
 	_, err = r.p.Client.{{.GetMethod}}(ctx, &{{.ProtoPackage}}.{{.RequestWrapper.GetRequest}}{
 		Name: id,
-		{{- if .Scoped}}
-		Scope: scope,
-		{{- end}}
 		{{- if .DefaultSubKind}}
 		SubKind: {{.VarName}}Resource.SubKind,
 		{{- end}}
@@ -179,21 +170,15 @@ func (r resourceTeleport{{.Name}}) Create(ctx context.Context, req tfsdk.CreateR
 	})
 {{- else}}
 
-	_, err = r.p.Client.{{.GetMethod}}(ctx, {{if .Namespaced}}defaults.Namespace, {{end}}{{if .IDPrefix}}idPrefix, {{end}}id{{if .Scoped}}, scope{{end}}{{if ne .WithSecrets ""}}, {{.WithSecrets}}{{end}})
+	_, err = r.p.Client.{{.GetMethod}}(ctx, {{if .Namespaced}}defaults.Namespace, {{end}}{{if .IDPrefix}}idPrefix, {{end}}id{{if ne .WithSecrets ""}}, {{.WithSecrets}}{{end}})
 {{- end}}
 	if !trace.IsNotFound(err) {
 		if err == nil {
 			{{ if .IDPrefix -}}
 			id := formatID(idPrefix, id)
 			{{ end -}}
-{{ if .Scoped -}}
-			tfID := formatSQN({{.VarName}}Resource.Scope, id)
-			existErr := fmt.Sprintf("{{.Name}} exists in Teleport. Either remove it (tctl rm {{.Kind}}/%v)"+
-				" or import it to the existing state (terraform import {{.TerraformResourceType}}.%v %v)", tfID, id, tfID)
-{{- else -}}
 			existErr := fmt.Sprintf("{{.Name}} exists in Teleport. Either remove it (tctl rm {{.Kind}}/%v)"+
 				" or import it to the existing state (terraform import {{.TerraformResourceType}}.%v %v)", id, id, id)
-{{- end }}
 
 			resp.Diagnostics.Append(diagFromErr("{{.Name}} exists in Teleport", trace.Errorf(existErr)))
 			return
@@ -241,9 +226,6 @@ func (r resourceTeleport{{.Name}}) Create(ctx context.Context, req tfsdk.CreateR
 	{{- if .RequestWrapper}}
 		{{.VarName}}GetResp, getErr := r.p.Client.{{.GetMethod}}(ctx, &{{.ProtoPackage}}.{{.RequestWrapper.GetRequest}}{
 			Name: id,
-			{{- if .Scoped}}
-			Scope: scope,
-			{{- end}}
 			{{- if .DefaultSubKind}}
 			SubKind: {{.VarName}}Resource.SubKind,
 			{{- end}}
@@ -260,7 +242,7 @@ func (r resourceTeleport{{.Name}}) Create(ctx context.Context, req tfsdk.CreateR
 		{{- end}}
 		}
 	{{- else}}
-		{{.VarName}}I, err = r.p.Client.{{.GetMethod}}(ctx, {{if .Namespaced}}defaults.Namespace, {{end}}{{if .IDPrefix}}idPrefix, {{end}}id{{if .Scoped}}, scope{{end}}{{if ne .WithSecrets ""}}, {{.WithSecrets}}{{end}})
+		{{.VarName}}I, err = r.p.Client.{{.GetMethod}}(ctx, {{if .Namespaced}}defaults.Namespace, {{end}}{{if .IDPrefix}}idPrefix, {{end}}id{{if ne .WithSecrets ""}}, {{.WithSecrets}}{{end}})
 	{{- end}}
 		if trace.IsNotFound(err) {
 		    select {
@@ -306,12 +288,8 @@ func (r resourceTeleport{{.Name}}) Create(ctx context.Context, req tfsdk.CreateR
 		return
 	}
 
-	{{ if and .IDPrefix .Scoped -}}
-	plan.Attrs["id"] = types.String{Value: formatSQN(scope, formatID(idPrefix, {{.ID}}))}
-	{{- else if .IDPrefix -}}
+	{{ if .IDPrefix -}}
 	plan.Attrs["id"] = types.String{Value: formatID(idPrefix, {{.ID}})}
-	{{- else if .Scoped -}}
-	plan.Attrs["id"] = types.String{Value: formatSQN(scope, id)}
 	{{- else -}}
 	plan.Attrs["id"] = types.String{Value: {{.ID}}}
 	{{- end }}
@@ -343,9 +321,6 @@ func (r resourceTeleport{{.Name}}) Create(ctx context.Context, req tfsdk.CreateR
 		{{- if .RequestWrapper }}
 			{{ .VarName }}Resp, err := r.p.Client.{{ .GetMethod }}(ctx, &{{ .ProtoPackage }}.{{ .RequestWrapper.GetRequest }}{
 				Name: id,
-				{{- if .Scoped }}
-				Scope: scope,
-				{{- end }}
 				{{- if .DefaultSubKind }}
 				SubKind: {{ .VarName }}Resource.SubKind,
 				{{- end }}
@@ -362,7 +337,7 @@ func (r resourceTeleport{{.Name}}) Create(ctx context.Context, req tfsdk.CreateR
 			{{ .VarName }} := {{ .VarName }}Resp.Get{{ .RequestWrapper.RequestResourceField }}()
 			{{- end}}
 		{{- else }}
-			{{ .VarName }}, err := r.p.Client.{{ .GetMethod }}(ctx, id{{if .Scoped}}, scope{{end}})
+			{{ .VarName }}, err := r.p.Client.{{ .GetMethod }}(ctx, id)
 			if err != nil {
 				return nil, "", trace.Wrap(err)
 			}
@@ -429,18 +404,6 @@ func (r resourceTeleport{{.Name}}) Read(ctx context.Context, req tfsdk.ReadResou
 	if resp.Diagnostics.HasError() {
 		return
 	}
-{{- if .Scoped}}
-	var scope types.String
-	{{- if .ConvertPackagePath}}
-	diags = req.State.GetAttribute(ctx, path.Root("header").AtName("scope"), &scope)
-	{{- else }}
-	diags = req.State.GetAttribute(ctx, path.Root("scope"), &scope)
-	{{- end}}
-	resp.Diagnostics.Append(diags...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-{{- end}}
 {{- if .DefaultSubKind}}
 	var subKind types.String
 	diags = req.State.GetAttribute(ctx, path.Root("sub_kind"), &subKind)
@@ -456,9 +419,6 @@ func (r resourceTeleport{{.Name}}) Read(ctx context.Context, req tfsdk.ReadResou
 
 	{{.VarName}}GetResp, err := r.p.Client.{{.GetMethod}}(ctx, &{{.ProtoPackage}}.{{.RequestWrapper.GetRequest}}{
 		Name: id.Value,
-		{{- if .Scoped}}
-		Scope: scope.Value,
-		{{- end}}
 		{{- if .DefaultSubKind}}
 		SubKind: subKind.Value,
 		{{- end}}
@@ -468,7 +428,7 @@ func (r resourceTeleport{{.Name}}) Read(ctx context.Context, req tfsdk.ReadResou
 	})
 {{- else}}
 
-	{{.VarName}}I, err := r.p.Client.{{.GetMethod}}(ctx, {{if .Namespaced}}defaults.Namespace, {{end}}{{if .IDPrefix}}idPrefix.Value, {{end}}id.Value{{if .Scoped}}, scope.Value{{end}}{{if ne .WithSecrets ""}}, {{.WithSecrets}}{{end}})
+	{{.VarName}}I, err := r.p.Client.{{.GetMethod}}(ctx, {{if .Namespaced}}defaults.Namespace, {{end}}{{if .IDPrefix}}idPrefix.Value, {{end}}id.Value{{if ne .WithSecrets ""}}, {{.WithSecrets}}{{end}})
 {{- end}}
 	if trace.IsNotFound(err) {
 		resp.State.RemoveResource(ctx)
@@ -498,13 +458,6 @@ func (r resourceTeleport{{.Name}}) Read(ctx context.Context, req tfsdk.ReadResou
 	if resp.Diagnostics.HasError() {
 		return
 	}
-{{- if and .IDPrefix .Scoped}}
-
-	state.Attrs["id"] = types.String{Value: formatSQN(scope.Value, formatID(idPrefix.Value, id.Value))}
-{{- else if .Scoped}}
-
-	state.Attrs["id"] = types.String{Value: formatSQN(scope.Value, id.Value)}
-{{- end}}
 
 	diags = resp.State.Set(ctx, &state)
 	resp.Diagnostics.Append(diags...)
@@ -564,16 +517,10 @@ func (r resourceTeleport{{.Name}}) Update(ctx context.Context, req tfsdk.UpdateR
 	idPrefix := {{.VarName}}Resource.{{$idPrefix}}
 	{{ end -}}
 	name := {{.VarName}}Resource.Metadata.Name
-	{{- if .Scoped }}
-	scope := {{.VarName}}Resource.GetScope()
-	{{- end }}
 {{- if .RequestWrapper}}
 
 	{{.VarName}}BeforeResp, err := r.p.Client.{{.GetMethod}}(ctx, &{{.ProtoPackage}}.{{.RequestWrapper.GetRequest}}{
 		Name: name,
-		{{- if .Scoped}}
-		Scope: scope,
-		{{- end}}
 		{{- if .DefaultSubKind}}
 		SubKind: {{.VarName}}Resource.SubKind,
 		{{- end}}
@@ -592,7 +539,7 @@ func (r resourceTeleport{{.Name}}) Update(ctx context.Context, req tfsdk.UpdateR
 	{{- end}}
 {{- else}}
 
-	{{.VarName}}Before, err := r.p.Client.{{.GetMethod}}(ctx, {{if .Namespaced}}defaults.Namespace, {{end}}{{if .IDPrefix}}idPrefix, {{end}}name{{if .Scoped}}, scope{{end}}{{if ne .WithSecrets ""}}, {{.WithSecrets}}{{end}})
+	{{.VarName}}Before, err := r.p.Client.{{.GetMethod}}(ctx, {{if .Namespaced}}defaults.Namespace, {{end}}{{if .IDPrefix}}idPrefix, {{end}}name{{if ne .WithSecrets ""}}, {{.WithSecrets}}{{end}})
 	if err != nil {
 		resp.Diagnostics.Append(diagFromWrappedErr("Error reading {{.Name}}", err, "{{.Kind}}"))
 		return
@@ -642,9 +589,6 @@ func (r resourceTeleport{{.Name}}) Update(ctx context.Context, req tfsdk.UpdateR
 	{{- if .RequestWrapper}}
 		{{.VarName}}GetResp, getErr := r.p.Client.{{.GetMethod}}(ctx, &{{.ProtoPackage}}.{{.RequestWrapper.GetRequest}}{
 			Name: name,
-			{{- if .Scoped}}
-			Scope: scope,
-			{{- end}}
 			{{- if .DefaultSubKind}}
 			SubKind: {{.VarName}}Resource.SubKind,
 			{{- end}}
@@ -661,7 +605,7 @@ func (r resourceTeleport{{.Name}}) Update(ctx context.Context, req tfsdk.UpdateR
 		{{- end}}
 		}
 	{{- else}}
-		{{.VarName}}I, err = r.p.Client.{{.GetMethod}}(ctx, {{if .Namespaced}}defaults.Namespace, {{end}}{{if .IDPrefix}}idPrefix, {{end}}name{{if .Scoped}}, scope{{end}}{{if ne .WithSecrets ""}}, {{.WithSecrets}}{{end}})
+		{{.VarName}}I, err = r.p.Client.{{.GetMethod}}(ctx, {{if .Namespaced}}defaults.Namespace, {{end}}{{if .IDPrefix}}idPrefix, {{end}}name{{if ne .WithSecrets ""}}, {{.WithSecrets}}{{end}})
 	{{- end}}
 		if err != nil {
 			resp.Diagnostics.Append(diagFromWrappedErr("Error reading {{.Name}}", err, "{{.Kind}}"))
@@ -698,13 +642,6 @@ func (r resourceTeleport{{.Name}}) Update(ctx context.Context, req tfsdk.UpdateR
 	if resp.Diagnostics.HasError() {
 		return
 	}
-{{- if and .IDPrefix .Scoped}}
-
-	plan.Attrs["id"] = types.String{Value: formatSQN(scope, formatID(idPrefix, name))}
-{{- else if .Scoped}}
-
-	plan.Attrs["id"] = types.String{Value: formatSQN(scope, name)}
-{{- end}}
 
 	diags = resp.State.Set(ctx, plan)
 	resp.Diagnostics.Append(diags...)
@@ -730,9 +667,6 @@ func (r resourceTeleport{{.Name}}) Update(ctx context.Context, req tfsdk.UpdateR
 		{{- if .RequestWrapper }}
 			{{ .VarName }}Resp, err := r.p.Client.{{ .GetMethod }}(ctx, &{{ .ProtoPackage }}.{{ .RequestWrapper.GetRequest }}{
 				Name: name,
-				{{- if .Scoped }}
-				Scope: scope,
-				{{- end }}
 				{{- if .DefaultSubKind }}
 				SubKind: {{ .VarName }}Resource.SubKind,
 				{{- end }}
@@ -749,7 +683,7 @@ func (r resourceTeleport{{.Name}}) Update(ctx context.Context, req tfsdk.UpdateR
 			{{ .VarName }} := {{ .VarName }}Resp.Get{{ .RequestWrapper.RequestResourceField }}()
 			{{- end}}
 		{{- else }}
-			{{ .VarName }}, err := r.p.Client.{{ .GetMethod }}(ctx, name{{if .Scoped}}, scope{{end}})
+			{{ .VarName }}, err := r.p.Client.{{ .GetMethod }}(ctx, name)
 			if err != nil {
 				return nil, "", trace.Wrap(err)
 			}
@@ -809,18 +743,6 @@ func (r resourceTeleport{{.Name}}) Delete(ctx context.Context, req tfsdk.DeleteR
 	if resp.Diagnostics.HasError() {
 		return
 	}
-{{- if .Scoped}}
-	var scope types.String
-	{{- if .ConvertPackagePath}}
-	diags = req.State.GetAttribute(ctx, path.Root("header").AtName("scope"), &scope)
-	{{- else }}
-	diags = req.State.GetAttribute(ctx, path.Root("scope"), &scope)
-	{{- end}}
-	resp.Diagnostics.Append(diags...)
-	if resp.Diagnostics.HasError() {
-		return
-	}
-{{- end}}
 {{- if .DefaultSubKind}}
 	var subKind types.String
 	diags = req.State.GetAttribute(ctx, path.Root("sub_kind"), &subKind)
@@ -836,16 +758,13 @@ func (r resourceTeleport{{.Name}}) Delete(ctx context.Context, req tfsdk.DeleteR
 
 	_, err := r.p.Client.{{.DeleteMethod}}(ctx, &{{.ProtoPackage}}.{{.RequestWrapper.DeleteRequest}}{
 		Name: id.Value,
-		{{- if .Scoped}}
-		Scope: scope.Value,
-		{{- end}}
 		{{- if .DefaultSubKind}}
 		SubKind: subKind.Value,
 		{{- end}}
 	})
 {{- else}}
 
-	err := r.p.Client.{{.DeleteMethod}}(ctx, {{if .Namespaced}}defaults.Namespace, {{end}}{{if .IDPrefix}}idPrefix.Value, {{end}}id.Value{{if .Scoped}}, scope.Value{{end}})
+	err := r.p.Client.{{.DeleteMethod}}(ctx, {{if .Namespaced}}defaults.Namespace, {{end}}{{if .IDPrefix}}idPrefix.Value, {{end}}id.Value)
 {{- end}}
 	if err != nil {
 		resp.Diagnostics.Append(diagFromWrappedErr("Error deleting {{.TypeName}}", trace.Wrap(err), "{{.Kind}}"))
@@ -866,19 +785,9 @@ func (r resourceTeleport{{.Name}}) ImportState(ctx context.Context, req tfsdk.Im
 		name = after
 	}
 {{- end}}
-{{- if .Scoped}}
-	qn, err := scopes.ParseQualifiedName(req.ID)
-	if err != nil {
-		resp.Diagnostics.Append(diagFromWrappedErr("Error parsing {{.Name}} ID", trace.Wrap(err), "{{.Kind}}"))
-		return
-	}
-{{- end}}
 {{- if .RequestWrapper}}
 	{{.VarName}}GetResp, err := r.p.Client.{{.GetMethod}}(ctx, &{{.ProtoPackage}}.{{.RequestWrapper.GetRequest}}{
-		Name: {{if .Scoped}}qn.Name{{else}}{{if .DefaultSubKind}}name{{else}}req.ID{{end}}{{end}},
-		{{- if .Scoped}}
-		Scope: qn.Scope,
-		{{- end}}
+		Name: {{if .DefaultSubKind}}name{{else}}req.ID{{end}},
 		{{- if .DefaultSubKind}}
 		SubKind: subKind,
 		{{- end}}
@@ -897,14 +806,14 @@ func (r resourceTeleport{{.Name}}) ImportState(ctx context.Context, req tfsdk.Im
 	{{- end}}
 {{- else}}
 	{{- if .IDPrefix}}
-	idPrefix, name, err := parseID({{if .Scoped}}qn.Name{{else}}req.ID{{end}})
+	idPrefix, name, err := parseID(req.ID)
 	if err != nil {
 		resp.Diagnostics.Append(diagFromWrappedErr("Error parsing Member ID", trace.Wrap(err), "{{.Kind}}"))
 		return
 	}
-	{{.VarName}}, err := r.p.Client.{{.GetMethod}}(ctx, {{if .Namespaced}}defaults.Namespace, {{end}}idPrefix, name{{if .Scoped}}, qn.Scope{{end}}{{if ne .WithSecrets ""}}, {{.WithSecrets}}{{end}})
+	{{.VarName}}, err := r.p.Client.{{.GetMethod}}(ctx, {{if .Namespaced}}defaults.Namespace, {{end}}idPrefix, name{{if ne .WithSecrets ""}}, {{.WithSecrets}}{{end}})
 	{{- else}}
-	{{.VarName}}, err := r.p.Client.{{.GetMethod}}(ctx, {{if .Namespaced}}defaults.Namespace, {{end}}{{if .Scoped}}qn.Name, qn.Scope{{else}}req.ID{{end}}{{if ne .WithSecrets ""}}, {{.WithSecrets}}{{end}})
+	{{.VarName}}, err := r.p.Client.{{.GetMethod}}(ctx, {{if .Namespaced}}defaults.Namespace, {{end}}req.ID{{if ne .WithSecrets ""}}, {{.WithSecrets}}{{end}})
 	{{- end}}
 {{- end}}
 	if err != nil {
@@ -934,16 +843,10 @@ func (r resourceTeleport{{.Name}}) ImportState(ctx context.Context, req tfsdk.Im
 		return
 	}
 
-{{- if and .IDPrefix .Scoped}}
-	id := formatSQN(qn.Scope, formatID(idPrefix, name))
-{{- else if .IDPrefix }}
+{{- if .IDPrefix }}
 	id := req.ID
 {{- else if or .IsPlainStruct .ConvertPackagePath}}
-	{{ if .Scoped -}}
-	id := formatSQN(qn.Scope, qn.Name)
-	{{- else -}}
 	id := {{.VarName}}.Metadata.Name
-	{{- end}}
 {{- else }}
 	id := {{.VarName}}Resource.GetName()
 {{- end}}
