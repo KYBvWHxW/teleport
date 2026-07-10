@@ -38,7 +38,7 @@ type statusArgs struct {
 }
 
 func (s *statusArgs) initStatus(app *kingpin.CmdClause) {
-	statusCmd := app.Command("status", "Show AWS and Azure auto-discovery status and enrollment progress.")
+	statusCmd := app.Command("status", "Show auto-discovery status and enrollment progress.")
 
 	statusCmd.Flag("format", "Output format.").
 		Default(teleport.Text).
