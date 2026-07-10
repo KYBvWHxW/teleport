@@ -32,111 +32,72 @@ import (
 const discoveryServiceSetupDocsURL = "https://goteleport.com/docs/reference/deployment/config/#discovery-service"
 
 func (s discoverySummary) renderText(w io.Writer, now time.Time) error {
+	var out strings.Builder
 	if len(s) == 0 {
-		_, err := fmt.Fprintln(w, "No AWS or Azure discovery_config resources are configured.")
-		if err != nil {
-			return trace.Wrap(err)
-		}
-		_, err = fmt.Fprintln(w, "Static discovery_service matchers from teleport.yaml do not report discovery config status.")
-		return trace.Wrap(err)
-	}
-
-	for i, config := range s {
-		if i > 0 {
-			if _, err := fmt.Fprintln(w); err != nil {
-				return trace.Wrap(err)
+		writeSummaryLine(&out, "No discovery_config resources are configured.")
+	} else {
+		for i, config := range s {
+			if i > 0 {
+				out.WriteByte('\n')
 			}
-		}
-		if err := config.writeText(w, now); err != nil {
-			return trace.Wrap(err)
+			config.writeText(&out, now)
 		}
 	}
 
-	return nil
+	_, err := io.WriteString(w, out.String())
+	return trace.Wrap(err)
 }
 
-func (c configSummary) writeText(w io.Writer, now time.Time) error {
-	if err := writeSummaryLine(w, "Discovery config %s:", c.Name); err != nil {
-		return trace.Wrap(err)
-	}
-	if err := writeSummaryLine(w, "  Discovery group: %s", c.DiscoveryGroup); err != nil {
-		return trace.Wrap(err)
-	}
-	if err := writeSummaryLine(w, "  Status: %s", formatSummaryState(c.State)); err != nil {
-		return trace.Wrap(err)
-	}
+func (c configSummary) writeText(w *strings.Builder, now time.Time) {
+	writeSummaryLine(w, "Discovery config %s:", c.Name)
+	writeSummaryLine(w, "  Discovery group: %s", c.DiscoveryGroup)
+	writeSummaryLine(w, "  Status: %s", formatSummaryState(c.State))
 	if c.LastSyncTime != nil {
-		if err := writeSummaryLine(w, "  Last run: %s", formatSummaryLastRun(c.LastSyncTime, now)); err != nil {
-			return trace.Wrap(err)
-		}
+		writeSummaryLine(w, "  Last run: %s", formatSummaryLastRun(c.LastSyncTime, now))
 	}
 	if c.ErrorMessage != "" {
-		if err := writeSummaryLine(w, "  Error: %s", c.ErrorMessage); err != nil {
-			return trace.Wrap(err)
-		}
+		writeSummaryLine(w, "  Error: %s", c.ErrorMessage)
 	}
 	if len(c.Servers) == 0 {
-		return trace.Wrap(writeSummaryLine(w, "  No Discovery Services running for %s. See %s.", c.DiscoveryGroup, discoveryServiceSetupDocsURL))
+		writeSummaryLine(w, "  No Discovery Services running for %s. See %s.", c.DiscoveryGroup, discoveryServiceSetupDocsURL)
+		return
 	}
-	if _, err := fmt.Fprintln(w); err != nil {
-		return trace.Wrap(err)
-	}
+	w.WriteByte('\n')
 	for _, server := range c.Servers {
-		if err := server.writeText(w, now); err != nil {
-			return trace.Wrap(err)
-		}
+		server.writeText(w, now)
 	}
-	return nil
 }
 
-func (s serverSummary) writeText(w io.Writer, now time.Time) error {
-	if err := writeSummaryLine(w, "  Service (%s):", s.ServerID); err != nil {
-		return trace.Wrap(err)
-	}
+func (s serverSummary) writeText(w *strings.Builder, now time.Time) {
+	writeSummaryLine(w, "  Service (%s):", s.ServerID)
 	if s.PollInterval != "" {
-		if err := writeSummaryLine(w, "    Poll interval: %s", formatPollInterval(s.PollInterval)); err != nil {
-			return trace.Wrap(err)
-		}
+		writeSummaryLine(w, "    Poll interval: %s", formatPollInterval(s.PollInterval))
 	}
 	if s.LastUpdate != nil {
-		if err := writeSummaryLine(w, "    Last update: %s", formatSummaryLastRun(s.LastUpdate, now)); err != nil {
-			return trace.Wrap(err)
-		}
+		writeSummaryLine(w, "    Last update: %s", formatSummaryLastRun(s.LastUpdate, now))
 	}
 	for _, integration := range s.Integrations {
-		if err := integration.writeText(w, now); err != nil {
-			return trace.Wrap(err)
-		}
+		integration.writeText(w, now)
 	}
-	return nil
 }
 
-func (i integrationSummary) writeText(w io.Writer, now time.Time) error {
-	if err := writeSummaryLine(w, "    %s:", formatIntegrationName(i.Integration)); err != nil {
-		return trace.Wrap(err)
-	}
+func (i integrationSummary) writeText(w *strings.Builder, now time.Time) {
+	writeSummaryLine(w, "    %s:", formatIntegrationName(i.Integration))
 	for _, resource := range i.Resources {
-		if err := resource.writeText(w, now); err != nil {
-			return trace.Wrap(err)
-		}
+		resource.writeText(w, now)
 	}
-	return nil
 }
 
-func (r resourceResult) writeText(w io.Writer, now time.Time) error {
-	if err := writeSummaryLine(w, "      %s discovery:", r.Kind); err != nil {
-		return trace.Wrap(err)
-	}
-	if err := writeSummaryLine(w, "        Previous sync: %s%s", formatSummaryLastRun(r.SyncEnd, now), formatSyncDuration(r.SyncStart, r.SyncEnd)); err != nil {
-		return trace.Wrap(err)
-	}
-	return trace.Wrap(writeSummaryLine(w, "        Result: %s", formatResourceResult(r)))
+func (r resourceResult) writeText(w *strings.Builder, now time.Time) {
+	writeSummaryLine(w, "      %s discovery:", r.Kind)
+	writeSummaryLine(w, "        Previous sync: %s%s", formatSummaryLastRun(r.SyncEnd, now), formatSyncDuration(r.SyncStart, r.SyncEnd))
+	writeSummaryLine(w, "        Result: %s", formatResourceResult(r))
 }
 
-func writeSummaryLine(w io.Writer, format string, args ...any) error {
+func writeSummaryLine(w *strings.Builder, format string, args ...any) {
 	line := fmt.Sprintf(format, args...)
-	_, err := fmt.Fprintln(w, strings.TrimRight(line, " "))
-	return trace.Wrap(err)
+	w.WriteString(strings.TrimRight(line, " "))
+	w.WriteByte('\n')
 }
 
 func formatSummaryState(state string) string {

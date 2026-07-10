@@ -33,13 +33,6 @@ const (
 	resourceKindAzureVM = "Azure VM"
 )
 
-type resourceBucket struct {
-	kind     string
-	cloud    string
-	summary  func(*discoveryconfigv1.DiscoverSummary) *discoveryconfigv1.ResourceSummary
-	sortRank int
-}
-
 func newDiscoverySummary(configs []*discoveryconfig.DiscoveryConfig, cloudProviders cloudProviderConfig) discoverySummary {
 	out := make(discoverySummary, 0, len(configs))
 	for _, dc := range configs {
@@ -105,26 +98,24 @@ func buildIntegrationSummaries(status map[string]*discoveryconfigv1.DiscoverSumm
 }
 
 func buildResourceResults(summary *discoveryconfigv1.DiscoverSummary, cloudProviders cloudProviderConfig) []resourceResult {
-	resources := make([]resourceResult, 0, len(resourceBuckets))
-	for _, bucket := range resourceBuckets {
-		if bucket.cloud == cloudAWS && !cloudProviders.aws {
-			continue
-		}
-		if bucket.cloud == cloudAzure && !cloudProviders.azure {
-			continue
-		}
-
-		resourceSummary := bucket.summary(summary)
-		if resourceSummary == nil || resourceSummary.GetPrevious() == nil {
-			continue
-		}
-		resources = append(resources, newResourceResult(bucket.kind, resourceSummary.GetPrevious()))
+	var resources []resourceResult
+	if cloudProviders.aws {
+		addResourceResult(&resources, resourceKindAWSEC2, summary.GetAwsEc2())
+		addResourceResult(&resources, resourceKindAWSRDS, summary.GetAwsRds())
+		addResourceResult(&resources, resourceKindAWSEKS, summary.GetAwsEks())
 	}
-
-	slices.SortFunc(resources, func(a, b resourceResult) int {
-		return cmp.Compare(resourceKindRank(a.Kind), resourceKindRank(b.Kind))
-	})
+	if cloudProviders.azure {
+		addResourceResult(&resources, resourceKindAzureVM, summary.GetAzureVms())
+	}
 	return resources
+}
+
+func addResourceResult(resources *[]resourceResult, kind string, summary *discoveryconfigv1.ResourceSummary) {
+	previous := summary.GetPrevious()
+	if previous == nil {
+		return
+	}
+	*resources = append(*resources, newResourceResult(kind, previous))
 }
 
 func newResourceResult(kind string, summary *discoveryconfigv1.ResourcesDiscoveredSummary) resourceResult {
@@ -141,40 +132,4 @@ func newResourceResult(kind string, summary *discoveryconfigv1.ResourcesDiscover
 		result.SyncEnd = new(syncEnd.AsTime())
 	}
 	return result
-}
-
-func resourceKindRank(kind string) int {
-	for _, bucket := range resourceBuckets {
-		if bucket.kind == kind {
-			return bucket.sortRank
-		}
-	}
-	return len(resourceBuckets)
-}
-
-var resourceBuckets = []resourceBucket{
-	{
-		kind:     resourceKindAWSEC2,
-		cloud:    cloudAWS,
-		summary:  func(s *discoveryconfigv1.DiscoverSummary) *discoveryconfigv1.ResourceSummary { return s.GetAwsEc2() },
-		sortRank: 0,
-	},
-	{
-		kind:     resourceKindAWSRDS,
-		cloud:    cloudAWS,
-		summary:  func(s *discoveryconfigv1.DiscoverSummary) *discoveryconfigv1.ResourceSummary { return s.GetAwsRds() },
-		sortRank: 1,
-	},
-	{
-		kind:     resourceKindAWSEKS,
-		cloud:    cloudAWS,
-		summary:  func(s *discoveryconfigv1.DiscoverSummary) *discoveryconfigv1.ResourceSummary { return s.GetAwsEks() },
-		sortRank: 2,
-	},
-	{
-		kind:     resourceKindAzureVM,
-		cloud:    cloudAzure,
-		summary:  func(s *discoveryconfigv1.DiscoverSummary) *discoveryconfigv1.ResourceSummary { return s.GetAzureVms() },
-		sortRank: 3,
-	},
 }

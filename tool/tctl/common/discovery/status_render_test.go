@@ -35,7 +35,7 @@ func TestRenderSummaryText(t *testing.T) {
 	t.Run("empty input shows no-configurations message", func(t *testing.T) {
 		var buf bytes.Buffer
 		require.NoError(t, discoverySummary(nil).renderText(&buf, now))
-		require.Equal(t, "No AWS or Azure discovery_config resources are configured.\nStatic discovery_service matchers from teleport.yaml do not report discovery config status.\n", buf.String())
+		require.Equal(t, "No discovery_config resources are configured.\n", buf.String())
 	})
 
 	t.Run("renders no-service warning", func(t *testing.T) {

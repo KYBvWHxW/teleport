@@ -101,7 +101,7 @@ func TestBuildDiscoverySummaryFromServerStatus(t *testing.T) {
 	require.Empty(t, serverA.Integrations[0].Integration)
 	require.Equal(t, "aws-prod", serverA.Integrations[1].Integration)
 	require.Equal(t, []string{resourceKindAWSEC2, resourceKindAWSRDS}, resourceKinds(serverA.Integrations[0].Resources))
-	require.Equal(t, []string{resourceKindAWSEC2, resourceKindAWSRDS}, resourceKinds(serverA.Integrations[1].Resources), "current-only EKS bucket must be skipped")
+	require.Equal(t, []string{resourceKindAWSEC2, resourceKindAWSRDS}, resourceKinds(serverA.Integrations[1].Resources), "current-only EKS summary must be skipped")
 	require.Equal(t, resourceResult{
 		Kind:      resourceKindAWSEC2,
 		Found:     10,
