@@ -88,17 +88,11 @@ func (c *AssignmentCache) GetScopedRoleAssignment(ctx context.Context, req *scop
 		return nil, trace.BadParameter("missing scoped role assignment name in get request")
 	}
 
-	assignment, ok := c.cache.Get(assignmentKey{
+	assignment, ok := c.cache.Get(req.GetScope(), assignmentKey{
 		name:    req.GetName(),
 		subKind: req.GetSubKind(),
 	}.String())
 	if !ok {
-		return nil, trace.NotFound("scoped role assignment %q not found", req.GetName())
-	}
-
-	// emulate namespace-like behavior by treating mismatched scopes as NotFound (prep for the transition
-	// to true namespacing).
-	if scopes.Compare(req.GetScope(), assignment.GetScope()) != scopes.Equivalent {
 		return nil, trace.NotFound("scoped role assignment %q not found in scope %q", req.GetName(), req.GetScope())
 	}
 
@@ -200,9 +194,9 @@ func (c *AssignmentCache) Put(assignment *scopedaccessv1.ScopedRoleAssignment) e
 	return nil
 }
 
-// Delete removes an assignment from the cache by name.
-func (c *AssignmentCache) Delete(name, subKind string) {
-	c.cache.Del(assignmentKey{
+// Delete removes an assignment from the cache by scope, name, and sub-kind.
+func (c *AssignmentCache) Delete(scope, name, subKind string) {
+	c.cache.Del(scope, assignmentKey{
 		name:    name,
 		subKind: subKind,
 	}.String())

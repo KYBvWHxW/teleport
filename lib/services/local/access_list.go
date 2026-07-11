@@ -56,7 +56,10 @@ const (
 
 	accessListReviewPrefix      = "access_list_review"
 	accessListReviewMaxPageSize = 200
-	scopedPrefix                = "scoped"
+
+	// scopedNamespacePrefix is the common prefix used by scope-namespaced types (not just
+	// access lists).
+	scopedNamespacePrefix = "scoped"
 
 	// This lock is necessary to prevent a race condition between access lists and members and to ensure
 	// consistency of the one-to-many relationship between them.
@@ -136,7 +139,7 @@ func NewAccessListServiceV2(cfg AccessListServiceConfig) (*AccessListService, er
 		PageLimit:                   accessListMaxPageSize,
 		ResourceKind:                types.KindAccessList,
 		UnscopedBackendPrefix:       backend.NewKey(accessListPrefix),
-		ScopedBackendPrefix:         backend.NewKey(scopedPrefix, accessListPrefix),
+		ScopedBackendPrefix:         backend.NewKey(scopedNamespacePrefix, accessListPrefix),
 		MarshalFunc:                 services.MarshalAccessList,
 		UnmarshalFunc:               services.UnmarshalAccessList,
 		RunWhileLockedRetryInterval: cfg.RunWhileLockedRetryInterval,
@@ -1180,7 +1183,7 @@ func scopeAwareLockName(accessListName scopes.QualifiedName) ([]string, error) {
 	if err != nil {
 		return nil, trace.Wrap(err)
 	}
-	return []string{scopedPrefix, accessListPrefix, encodedScope, accessListName.Name}, nil
+	return []string{scopedNamespacePrefix, accessListPrefix, encodedScope, accessListName.Name}, nil
 }
 
 // verifyAccessListCreateLimit ensures creating access list is limited to no more than 1 (updating is allowed).
