@@ -25,12 +25,14 @@ import (
 	"github.com/gravitational/trace"
 
 	accesslistv1 "github.com/gravitational/teleport/api/gen/proto/go/teleport/accesslist/v1"
+	scopesv1 "github.com/gravitational/teleport/api/gen/proto/go/teleport/scopes/v1"
 	"github.com/gravitational/teleport/api/types"
 	"github.com/gravitational/teleport/api/types/accesslist"
 	"github.com/gravitational/teleport/api/utils/clientutils"
 	"github.com/gravitational/teleport/lib/asciitable"
 	"github.com/gravitational/teleport/lib/auth/authclient"
 	"github.com/gravitational/teleport/lib/itertools/stream"
+	"github.com/gravitational/teleport/lib/scopes"
 	"github.com/gravitational/teleport/lib/services"
 )
 
@@ -62,19 +64,36 @@ func (c *accessListCollection) WriteText(w io.Writer, verbose bool) error {
 
 func accessListHandler() Handler {
 	return Handler{
-		getHandler:    getAccessList,
+		getHandler:    getUnscopedAccessList,
 		createHandler: createAccessList,
-		deleteHandler: deleteAccessList,
+		deleteHandler: deleteUnscopedAccessList,
 		singleton:     false,
 		mfaRequired:   true,
 		description:   "Used to grant roles or traits to users or other lists. Part of Identity Governance.",
 	}
 }
 
-// getAccessList implements `tctl get accesslist/my-list` command.
-func getAccessList(ctx context.Context, client *authclient.Client, ref services.Ref, opts GetOpts) (Collection, error) {
-	if ref.Name != "" {
-		resource, err := client.AccessListClient().GetAccessList(ctx, ref.Name)
+func accessListScopedHandler() ScopedHandler {
+	return ScopedHandler{
+		getHandler:    getAccessList,
+		createHandler: createAccessList,
+		deleteHandler: deleteAccessList,
+		mfaRequired:   true,
+		description:   "Used to grant roles or traits to users or other lists. Part of Identity Governance.",
+	}
+}
+
+// getAccessList implements `tctl get accesslist /scope::my-list` command.
+func getAccessList(ctx context.Context, client *authclient.Client, subKind string, sqn *scopes.QualifiedName, opts GetOpts) (Collection, error) {
+	if subKind != "" {
+		return nil, rejectSubKind(types.KindAccessList, subKind)
+	}
+
+	if sqn != nil {
+		resource, err := client.AccessListClient().GetAccessListV2(ctx, accesslistv1.GetAccessListRequest_builder{
+			Scope: sqn.Scope,
+			Name:  sqn.Name,
+		}.Build())
 		if err != nil {
 			return nil, trace.Wrap(err)
 		}
@@ -87,12 +106,22 @@ func getAccessList(ctx context.Context, client *authclient.Client, ref services.
 				accesslistv1.ListAccessListsV2Request_builder{
 					PageSize:  int32(size),
 					PageToken: token,
+					ScopeFilter: scopesv1.Filter_builder{
+						Mode: scopesv1.Mode_MODE_ALL,
+					}.Build(),
 				}.Build())
 		}),
 	)
 
 	return &accessListCollection{accessLists: accessLists}, trace.Wrap(err)
+}
 
+// getUnscopedAccessList implements `tctl get accesslist/my-list` command.
+func getUnscopedAccessList(ctx context.Context, client *authclient.Client, ref services.Ref, opts GetOpts) (Collection, error) {
+	if ref.Name != "" {
+		return getAccessList(ctx, client, ref.SubKind, &scopes.QualifiedName{Name: ref.Name}, opts)
+	}
+	return getAccessList(ctx, client, ref.SubKind, nil, opts)
 }
 
 // createAccessList implements `tctl create accesslist/my-list` command.
@@ -102,7 +131,10 @@ func createAccessList(ctx context.Context, client *authclient.Client, raw servic
 		return trace.Wrap(err)
 	}
 
-	_, err = client.AccessListClient().GetAccessList(ctx, accessList.GetName())
+	_, err = client.AccessListClient().GetAccessListV2(ctx, accesslistv1.GetAccessListRequest_builder{
+		Scope: accessList.GetScope(),
+		Name:  accessList.GetName(),
+	}.Build())
 	if err != nil && !trace.IsNotFound(err) {
 		return trace.Wrap(err)
 	}
@@ -121,11 +153,23 @@ func createAccessList(ctx context.Context, client *authclient.Client, raw servic
 
 }
 
-// deleteAccessList implements `tctl rm accesslist/my-list` command.
-func deleteAccessList(ctx context.Context, client *authclient.Client, ref services.Ref) error {
-	if err := client.AccessListClient().DeleteAccessList(ctx, ref.Name); err != nil {
+// deleteAccessList implements `tctl rm accesslist /scope::my-list` command.
+func deleteAccessList(ctx context.Context, client *authclient.Client, subKind string, sqn scopes.QualifiedName) error {
+	if subKind != "" {
+		return rejectSubKind(types.KindAccessList, subKind)
+	}
+
+	if err := client.AccessListClient().DeleteAccessListV2(ctx, accesslistv1.DeleteAccessListRequest_builder{
+		Scope: sqn.Scope,
+		Name:  sqn.Name,
+	}.Build()); err != nil {
 		return trace.Wrap(err)
 	}
-	fmt.Printf("Access list %q has been deleted\n", ref.Name)
+	fmt.Printf("Access list %q has been deleted\n", sqn.String())
 	return nil
+}
+
+// deleteAccessList implements `tctl rm accesslist/my-list` command.
+func deleteUnscopedAccessList(ctx context.Context, client *authclient.Client, ref services.Ref) error {
+	return deleteAccessList(ctx, client, ref.SubKind, scopes.QualifiedName{Name: ref.Name})
 }
