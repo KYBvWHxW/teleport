@@ -215,6 +215,12 @@ func StrongValidateRole(role *scopedaccessv1.ScopedRole) error {
 		return trace.BadParameter("scoped role %q has invalid login %q", role.GetMetadata().GetName(), login)
 	}
 
+	// verify that at least one label entry is defined when SSH block is given - scoped roles are deny by default, so a wildcard entry for
+	// labels must be explicitly provided if the role is meant to grant full access
+	if role.GetSpec().GetSsh() != nil && len(role.GetSpec().GetSsh().GetLabels()) == 0 {
+		return trace.BadParameter("scoped role %q has no spec.ssh.labels defined, please add at least one entry", role.GetMetadata().GetName())
+	}
+
 	// verify that ssh node labels are well-formed
 	for _, label := range role.GetSpec().GetSsh().GetLabels() {
 		// we currently don't support any form of wildcard/regex/substitution in scoped role
@@ -660,6 +666,12 @@ func validateKubeBlock(kube *scopedaccessv1.ScopedRoleKube) error {
 		if err := validateLock(lock); err != nil {
 			return trace.BadParameter("invalid kube.lock.mode %q", lock.GetMode())
 		}
+	}
+
+	// verify that at least one label entry is defined - scoped roles are deny by default, so a wildcard entry for
+	// labels must be explicitly provided if the role is meant to grant full access
+	if len(kube.GetLabels()) == 0 {
+		return trace.BadParameter("no spec.kube.labels defined, please add at least one entry")
 	}
 
 	// verify that kube labels are well-formed
