@@ -421,7 +421,7 @@ func getAccessRoleByName(ctx context.Context, client *authclient.Client, roleNam
 
 // rejectUnknownGrants returns an error if an unknown role exists in the
 // access list preset label or in the member/owner grant roles. Also rejects
-// if any other grant fields then "roles" were defined. This helps in avoiding
+// if any grant fields other than "roles" were defined. This helps in avoiding
 // silent dropping of unsupported fields when updating.
 func rejectUnknownGrants(al *accesslist.AccessList) error {
 	knownRoles := map[string]struct{}{
