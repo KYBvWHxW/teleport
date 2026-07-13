@@ -300,6 +300,10 @@ type IdentityContext struct {
 	// this identity is associated with, if any.
 	BotInstanceID string
 
+	// BotScope is the scope of the Machine ID bot this identity is associated
+	// with, if any.
+	BotScope string
+
 	// JoinToken is the name of the join token used to join this bot identity,
 	// if any, and will not be set for bot instances that joined using the
 	// `token` join method.
@@ -310,6 +314,9 @@ type IdentityContext struct {
 	// deadline in cases where both require_session_mfa and disconnect_expired_cert
 	// are enabled. See https://github.com/gravitational/teleport/issues/18544.
 	PreviousIdentityExpires time.Time
+
+	// BeamID is the identifier of the Beam this session was created for.
+	BeamID string
 }
 
 // ServerContext holds session specific context, such as SSH auth agents, PTYs,
@@ -1161,23 +1168,27 @@ func (id *IdentityContext) GetUserMetadata() apievents.UserMetadata {
 	// not support trusted clusters, the scope pin should always be available
 	// on the unmapped identity for all scoped identities.
 	var scopePin *scopesv1.Pin
+	var beamID string
 	if id.UnmappedIdentity != nil {
 		scopePin = id.UnmappedIdentity.ScopePin
+		beamID = id.UnmappedIdentity.BeamID
 	}
 
 	return apievents.UserMetadata{
-		Login:           id.Login,
-		User:            id.TeleportUser,
-		Impersonator:    id.Impersonator,
-		AccessRequests:  id.ActiveRequests,
-		TrustedDevice:   id.UnmappedIdentity.GetDeviceMetadata(),
-		UserKind:        userKind,
-		BotName:         id.BotName,
-		BotInstanceID:   id.BotInstanceID,
-		UserClusterName: id.OriginClusterName,
-		UserRoles:       slices.Clone(id.MappedRoles),
-		UserTraits:      id.Traits.Clone(),
-		ScopePin:        pinning.ToEventsPin(scopePin),
+		Login:            id.Login,
+		User:             id.TeleportUser,
+		Impersonator:     id.Impersonator,
+		AccessRequests:   id.ActiveRequests,
+		TrustedDevice:    id.UnmappedIdentity.GetDeviceMetadata(),
+		UserKind:         userKind,
+		BotName:          id.BotName,
+		BotInstanceID:    id.BotInstanceID,
+		BotScopeOfOrigin: id.BotScope,
+		UserClusterName:  id.OriginClusterName,
+		UserRoles:        slices.Clone(id.MappedRoles),
+		UserTraits:       id.Traits.Clone(),
+		ScopePin:         pinning.ToEventsPin(scopePin),
+		BeamID:           beamID,
 	}
 }
 
@@ -1331,6 +1342,25 @@ func (c *ServerContext) GetPortForwardEvent(evType, code, addr string) apievents
 			RemoteAddr: sconn.RemoteAddr().String(),
 		},
 		Addr: addr,
+		Status: apievents.Status{
+			Success: true,
+		},
+	}
+}
+
+func (c *ServerContext) GetAgentForwardEvent() *apievents.AgentForward {
+	sconn := c.ConnectionContext.ServerConn
+	return &apievents.AgentForward{
+		Metadata: apievents.Metadata{
+			Type: events.AgentForwardEvent,
+			Code: events.AgentForwardCode,
+		},
+		UserMetadata: c.Identity.GetUserMetadata(),
+		ConnectionMetadata: apievents.ConnectionMetadata{
+			LocalAddr:  sconn.LocalAddr().String(),
+			RemoteAddr: sconn.RemoteAddr().String(),
+		},
+		ServerMetadata: c.ServerMetadata(),
 		Status: apievents.Status{
 			Success: true,
 		},
