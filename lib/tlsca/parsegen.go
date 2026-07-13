@@ -240,6 +240,9 @@ func ParseCertificatePEMs(bytes []byte) ([]*x509.Certificate, error) {
 		}
 		certs = append(certs, cert)
 	}
+	if len(certs) == 0 {
+		return nil, trace.BadParameter("no PEM-encoded certificate found")
+	}
 	return certs, nil
 }
 

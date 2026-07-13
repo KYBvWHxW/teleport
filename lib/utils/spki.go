@@ -36,6 +36,10 @@ func CalculateSPKI(cert *x509.Certificate) string {
 
 // CheckSPKI the passed in pin against the calculated value from a certificate.
 func CheckSPKI(pins []string, certs []*x509.Certificate) error {
+	if len(certs) == 0 {
+		return trace.BadParameter("no certificates provided to check against pins")
+	}
+
 	// check pins
 	for _, pin := range pins {
 		// Check that the format of the pin is valid.
