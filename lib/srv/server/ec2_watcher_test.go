@@ -726,6 +726,99 @@ func TestEC2WatcherOrganizationAccessDeniedReturnsPermissionError(t *testing.T) 
 	require.True(t, trace.IsAccessDenied(permErr.Err))
 }
 
+func TestEC2WatcherOrganizationClientCreationPermissionErrorReturnsPermissionError(t *testing.T) {
+	t.Parallel()
+
+	const (
+		discoveryConfigName = "dc-org-client"
+		integrationName     = "aws-integration"
+		organizationID      = "o-abcdefghij"
+		roleARN             = "arn:aws:iam::123456789012:role/OrganizationReader"
+	)
+
+	for _, tt := range []struct {
+		name     string
+		err      error
+		checkErr func(*testing.T, error)
+	}{
+		{
+			name: "access denied",
+			err:  trace.AccessDenied("organizations client denied"),
+			checkErr: func(t *testing.T, err error) {
+				require.True(t, trace.IsAccessDenied(err))
+			},
+		},
+		{
+			name: "invalid identity token",
+			err: fmt.Errorf("failed to retrieve credentials: %w", &ststypes.InvalidIdentityTokenException{
+				Message: aws.String("No OpenIDConnect provider found"),
+			}),
+			checkErr: func(t *testing.T, err error) {
+				require.ErrorAs(t, err, new(*ststypes.InvalidIdentityTokenException))
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			matchers := []types.AWSMatcher{
+				{
+					Params: &types.InstallerParams{
+						InstallTeleport: true,
+					},
+					Types:       []string{"ec2"},
+					Regions:     []string{"us-west-2"},
+					Tags:        map[string]utils.Strings{"teleport": {"yes"}},
+					Integration: integrationName,
+					SSM:         &types.AWSSSM{},
+					AssumeRole: &types.AssumeRole{
+						RoleARN:  roleARN,
+						RoleName: "OrganizationReader",
+					},
+					Organization: &types.AWSOrganizationMatcher{
+						OrganizationID: organizationID,
+						OrganizationalUnits: &types.AWSOrganizationUnitsMatcher{
+							Include: []string{types.Wildcard},
+						},
+					},
+				},
+			}
+
+			fetchers, err := MatchersToEC2InstanceFetchers(t.Context(), MatcherToEC2FetcherParams{
+				Matchers: matchers,
+				PublicProxyAddrGetter: func(ctx context.Context) (string, error) {
+					return "proxy.example.com:3080", nil
+				},
+				EC2ClientGetter: func(ctx context.Context, region string, opts ...awsconfig.OptionsFn) (ec2.DescribeInstancesAPIClient, error) {
+					return nil, errors.New("EC2 client getter must not be called when org client creation fails")
+				},
+				AWSOrganizationsGetter: func(ctx context.Context, opts ...awsconfig.OptionsFn) (liborganizations.OrganizationsClient, error) {
+					return nil, tt.err
+				},
+				DiscoveryConfigName: discoveryConfigName,
+			})
+			require.NoError(t, err)
+			require.Len(t, fetchers, 1)
+
+			results, err := fetchers[0].GetInstances(t.Context(), false)
+			require.NoError(t, err)
+			require.Len(t, results, 1)
+
+			result := results[0]
+			require.Empty(t, result.Instances)
+			require.Len(t, result.PermissionErrors, 1)
+
+			permErr := result.PermissionErrors[0]
+			require.Equal(t, integrationName, permErr.Integration)
+			require.Equal(t, usertasks.AutoDiscoverEC2IssuePermOrgDenied, permErr.IssueType)
+			require.Equal(t, discoveryConfigName, permErr.DiscoveryConfigName)
+			require.Equal(t, "123456789012", permErr.AccountID)
+			require.Empty(t, permErr.Region)
+			tt.checkErr(t, permErr.Err)
+		})
+	}
+}
+
 func TestEC2WatcherListRegionsAccessDeniedReturnsPermissionError(t *testing.T) {
 	t.Parallel()
 

@@ -699,7 +699,9 @@ func (f *ec2InstanceFetcher) fetchAccountIDsUnderOrganization(ctx context.Contex
 
 	orgsClient, err := f.AWSOrganizationsGetter(ctx, awsOpts...)
 	if err != nil {
-		return nil, trace.Wrap(err)
+		return nil, f.wrapEC2DiscoveryPermissionError(
+			ctx, err, usertasks.AutoDiscoverEC2IssuePermOrgDenied, f.Matcher.AssumeRole.RoleARN, "",
+		)
 	}
 
 	accountIDs, err := organizations.MatchingAccounts(ctx, f.Logger, orgsClient, organizations.MatchingAccountsFilter{
