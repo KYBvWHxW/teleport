@@ -3260,7 +3260,7 @@ func (process *TeleportProcess) newAccessCacheForClient(cfg accesspoint.Config, 
 	cfg.HealthCheckConfig = client
 	cfg.AppAuthConfig = client
 	cfg.SubCAService = client
-	cfg.KubeClusterUpstream = services.NewKubeClusterClientAdapter(client.KubeServiceClient())
+	cfg.KubeClusterUpstream = services.NewKubeClusterClientAdapter(client.KubeClusterServiceClient())
 
 	return accesspoint.NewCache(cfg)
 }
