@@ -521,7 +521,7 @@ func (r *RoleV6) GetKubeResources(rct RoleConditionType) []KubernetesResource {
 // Must be in sync with RoleV6.convertRequestKubernetesResourcesBetweenRoleVersions.
 func (r *RoleV6) convertKubernetesResourcesBetweenRoleVersions(resources []KubernetesResource) []KubernetesResource {
 	switch r.Version {
-	case V8:
+	case V8, V9:
 		return resources
 	default:
 		v7resources := slices.Clone(resources)
@@ -599,7 +599,7 @@ func (r *RoleV6) convertKubernetesResourcesBetweenRoleVersions(resources []Kuber
 // and append the other supported resources - KubernetesResourcesKinds - for Role v8.
 func (r *RoleV6) convertAllowKubernetesResourcesBetweenRoleVersions(resources []KubernetesResource) []KubernetesResource {
 	switch r.Version {
-	case V7, V8:
+	case V7, V8, V9:
 		// V7 and v8 uses the same logic for allow and deny.
 		return r.convertKubernetesResourcesBetweenRoleVersions(resources)
 	// Teleport does not support role versions < v3.
@@ -727,7 +727,7 @@ func (r *RoleV6) convertRequestKubernetesResourcesBetweenRoleVersions(resources 
 		return nil
 	}
 	switch r.Version {
-	case V8:
+	case V8, V9:
 		return resources
 	default:
 		v7resources := slices.Clone(resources)
@@ -1254,7 +1254,7 @@ func (r *RoleV6) GetPrivateKeyPolicy() keys.PrivateKeyPolicy {
 // setStaticFields sets static resource header and metadata fields.
 func (r *RoleV6) setStaticFields() {
 	r.Kind = KindRole
-	if r.Version != V3 && r.Version != V4 && r.Version != V5 && r.Version != V6 && r.Version != V7 {
+	if r.Version != V3 && r.Version != V4 && r.Version != V5 && r.Version != V6 && r.Version != V7 && r.Version != V8 && r.Version != V9 {
 		// When incrementing the role version, make sure to update the
 		// role version in the asset file used by the UI.
 		// See: web/packages/teleport/src/Roles/templates/role.yaml
@@ -1420,7 +1420,7 @@ func (r *RoleV6) CheckAndSetDefaults() error {
 		if err := validateRoleSpecKubeResources(r.Version, r.Spec); err != nil {
 			return trace.Wrap(err)
 		}
-	case V8:
+	case V8, V9:
 		// Kubernetes resources default to {kind:*, name:*, namespace:*, api_group:*, verbs:[*]} for v8 roles.
 		if len(r.Spec.Allow.KubernetesResources) == 0 && r.HasLabelMatchers(Allow, KindKubernetesCluster) {
 			r.Spec.Allow.KubernetesResources = []KubernetesResource{
@@ -1440,6 +1440,10 @@ func (r *RoleV6) CheckAndSetDefaults() error {
 		}
 	default:
 		return trace.BadParameter("unrecognized role version: %v", r.Version)
+	}
+
+	if err := r.checkAppResources(); err != nil {
+		return trace.Wrap(err)
 	}
 
 	if err := checkAndSetRoleConditionNamespaces(&r.Spec.Deny.Namespaces); err != nil {
@@ -2182,7 +2186,7 @@ func validateKubeResources(roleVersion string, kubeResources []KubernetesResourc
 			if kubeResource.Namespace == "" && !slices.Contains(KubernetesClusterWideResourceKinds, kubeResource.Kind) {
 				return trace.BadParameter("KubernetesResource kind %q must include Namespace", kubeResource.Kind)
 			}
-		case V8:
+		case V8, V9:
 			if kubeResource.Kind == "" {
 				return trace.BadParameter("KubernetesResource kind %q is required in role version %q", kubeResource.Kind, roleVersion)
 			}
@@ -2223,7 +2227,7 @@ func validateKubeResources(roleVersion string, kubeResources []KubernetesResourc
 func validateRequestKubeResources(roleVersion string, kubeResources []RequestKubernetesResource) error {
 	for _, kubeResource := range kubeResources {
 		switch roleVersion {
-		case V8:
+		case V8, V9:
 			if kubeResource.Kind == "" {
 				return trace.BadParameter("request.kubernetes_resource kind is required in role version %q", roleVersion)
 			}
@@ -2261,6 +2265,108 @@ func validateRequestKubeResources(roleVersion string, kubeResources []RequestKub
 					kubeResource.Kind, roleVersion, V8)
 			}
 		}
+	}
+	return nil
+}
+
+const (
+	// maxAppRulesPerRole caps the app_resources and app_resources_expressions
+	// entries a single role may define.
+	maxAppRulesPerRole = 64
+	// maxAppWhereBytes caps one app_resources where clause.
+	maxAppWhereBytes = 1 << 10 // 1 KiB
+	// maxAppExpressionBytes caps one app_resources_expressions entry.
+	maxAppExpressionBytes = 4 << 10 // 4 KiB
+)
+
+// checkAppResources validates the app_resources and app_resources_expressions
+// fields. Both require role version v9 and are allowed only under allow, so a
+// pre-v9 role that sets either is rejected, as is any use under deny.
+func (r *RoleV6) checkAppResources() error {
+	allow := r.Spec.Allow
+	deny := r.Spec.Deny
+	if r.Version != V9 {
+		if len(allow.AppResources) > 0 || len(allow.AppResourcesExpressions) > 0 ||
+			len(deny.AppResources) > 0 || len(deny.AppResourcesExpressions) > 0 {
+			return trace.BadParameter(
+				"app_resources and app_resources_expressions require role version %q, got %q", V9, r.Version)
+		}
+		return nil
+	}
+	if len(deny.AppResources) > 0 || len(deny.AppResourcesExpressions) > 0 {
+		return trace.BadParameter("app_resources and app_resources_expressions are not allowed under deny")
+	}
+	return trace.Wrap(validateAppResources(allow.AppResources, allow.AppResourcesExpressions))
+}
+
+// validateAppResources checks the per-role cap and the structural constraints
+// of every app_resources rule and app_resources_expressions entry.
+func validateAppResources(rules []AppResource, expressions []string) error {
+	if total := len(rules) + len(expressions); total > maxAppRulesPerRole {
+		return trace.BadParameter(
+			"a role may define at most %d app_resources rules, got %d", maxAppRulesPerRole, total)
+	}
+	for i, rule := range rules {
+		if err := rule.check(); err != nil {
+			return trace.Wrap(err, "app_resources[%d]", i)
+		}
+	}
+	for i, expr := range expressions {
+		if len(expr) > maxAppExpressionBytes {
+			return trace.BadParameter(
+				"app_resources_expressions[%d] is %d bytes, over the %d byte cap", i, len(expr), maxAppExpressionBytes)
+		}
+	}
+	return nil
+}
+
+// check validates the structural constraints of one app_resources rule. It
+// leaves path parsing and predicate compilation to later evaluation stages.
+func (a AppResource) check() error {
+	if a.UnsafeAllowAll {
+		return a.checkUnsafeAllowAllStandsAlone()
+	}
+	if len(a.Paths) == 0 {
+		return trace.BadParameter("a rule must set paths or unsafe_allow_all")
+	}
+	if len(a.Where) > maxAppWhereBytes {
+		return trace.BadParameter("where clause is %d bytes, over the %d byte cap", len(a.Where), maxAppWhereBytes)
+	}
+	if a.AllowReason != "" && a.AllowCode == "" {
+		return trace.BadParameter("allow_reason set without allow_code")
+	}
+	if err := validateAppCode(a.AllowCode); err != nil {
+		return trace.Wrap(err, "invalid allow_code")
+	}
+	if a.DenyReasonHint != "" && a.DenyCodeHint == "" {
+		return trace.BadParameter("deny_reason_hint set without deny_code_hint")
+	}
+	if err := validateAppCode(a.DenyCodeHint); err != nil {
+		return trace.Wrap(err, "invalid deny_code_hint")
+	}
+	if a.DenyCodeHint != "" && a.Where == "" {
+		return trace.BadParameter("deny_code_hint set without a where clause for the hint to qualify")
+	}
+	return nil
+}
+
+// checkUnsafeAllowAllStandsAlone rejects an unsafe_allow_all rule that also
+// sets another field. unsafe_allow_all grants everything, so any companion
+// field is redundant or contradictory.
+func (a AppResource) checkUnsafeAllowAllStandsAlone() error {
+	if len(a.Paths) > 0 || len(a.Methods) > 0 || a.Where != "" ||
+		len(a.AllowEncoded) > 0 || a.AllowCode != "" || a.AllowReason != "" ||
+		a.DenyCodeHint != "" || a.DenyReasonHint != "" {
+		return trace.BadParameter("unsafe_allow_all cannot be combined with any other field")
+	}
+	return nil
+}
+
+// validateAppCode rejects an allow or deny code that uses the reserved
+// teleport_ prefix. An empty code is valid, since codes are optional.
+func validateAppCode(code string) error {
+	if strings.HasPrefix(code, "teleport_") {
+		return trace.BadParameter("code %q must not start with the reserved teleport_ prefix", code)
 	}
 	return nil
 }
