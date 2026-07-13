@@ -32,6 +32,7 @@ import (
 	ec2types "github.com/aws/aws-sdk-go-v2/service/ec2/types"
 	"github.com/aws/aws-sdk-go-v2/service/organizations"
 	organizationtypes "github.com/aws/aws-sdk-go-v2/service/organizations/types"
+	ststypes "github.com/aws/aws-sdk-go-v2/service/sts/types"
 	"github.com/google/go-cmp/cmp"
 	"github.com/gravitational/trace"
 	"github.com/stretchr/testify/require"
@@ -876,6 +877,89 @@ func TestEC2WatcherDescribeInstancesAccessDeniedReturnsPermissionErrorAndPartial
 		AssumeRoleARN:       roleARN,
 		DiscoveryConfigName: discoveryConfigName,
 	}, result.Instances[0])
+}
+
+func TestEC2WatcherClientCreationPermissionErrorReturnsPermissionError(t *testing.T) {
+	t.Parallel()
+
+	const (
+		discoveryConfigName = "dc-client"
+		integrationName     = "aws-integration"
+		roleARN             = "arn:aws:iam::123456789012:role/Discovery"
+		region              = "us-west-2"
+	)
+
+	for _, tt := range []struct {
+		name     string
+		err      error
+		checkErr func(*testing.T, error)
+	}{
+		{
+			name: "access denied",
+			err:  trace.AccessDenied("ec2 client denied"),
+			checkErr: func(t *testing.T, err error) {
+				require.True(t, trace.IsAccessDenied(err))
+			},
+		},
+		{
+			name: "invalid identity token",
+			err: fmt.Errorf("failed to retrieve credentials: %w", &ststypes.InvalidIdentityTokenException{
+				Message: aws.String("No OpenIDConnect provider found"),
+			}),
+			checkErr: func(t *testing.T, err error) {
+				require.ErrorAs(t, err, new(*ststypes.InvalidIdentityTokenException))
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			matchers := []types.AWSMatcher{
+				{
+					Params: &types.InstallerParams{
+						InstallTeleport: true,
+					},
+					Types:       []string{"ec2"},
+					Regions:     []string{region},
+					Tags:        map[string]utils.Strings{"teleport": {"yes"}},
+					Integration: integrationName,
+					SSM:         &types.AWSSSM{},
+					AssumeRole: &types.AssumeRole{
+						RoleARN: roleARN,
+					},
+				},
+			}
+
+			fetchers, err := MatchersToEC2InstanceFetchers(t.Context(), MatcherToEC2FetcherParams{
+				Matchers: matchers,
+				PublicProxyAddrGetter: func(ctx context.Context) (string, error) {
+					return "proxy.example.com:3080", nil
+				},
+				EC2ClientGetter: func(ctx context.Context, region string, opts ...awsconfig.OptionsFn) (ec2.DescribeInstancesAPIClient, error) {
+					return nil, tt.err
+				},
+				DiscoveryConfigName: discoveryConfigName,
+			})
+			require.NoError(t, err)
+			require.Len(t, fetchers, 1)
+
+			results, err := fetchers[0].GetInstances(t.Context(), false)
+			require.NoError(t, err)
+			require.Len(t, results, 1)
+
+			result := results[0]
+			require.Empty(t, result.Instances)
+			require.Len(t, result.PermissionErrors, 1)
+
+			permErr := result.PermissionErrors[0]
+			require.Equal(t, integrationName, permErr.Integration)
+			require.Equal(t, usertasks.AutoDiscoverEC2IssuePermAccountDenied, permErr.IssueType)
+			require.Equal(t, discoveryConfigName, permErr.DiscoveryConfigName)
+			require.Equal(t, "123456789012", permErr.AccountID)
+			require.Equal(t, region, permErr.Region)
+			tt.checkErr(t, permErr.Err)
+		})
+	}
 }
 
 func TestEC2WatcherWithMultipleAccounts(t *testing.T) {
