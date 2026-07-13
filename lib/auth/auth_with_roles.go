@@ -4277,6 +4277,7 @@ func (a *ScopedServerWithRoles) generateUserCerts(ctx context.Context, req proto
 			MFAVerified:       verifiedMFADeviceID,
 			DeviceExtensions:  a.scopedContext.Identity.GetIdentity().DeviceExtensions,
 			AppName:           req.RouteToApp.Name,
+			AppScope:          req.RouteToApp.Scope,
 			AppURI:            req.RouteToApp.URI,
 			AppTargetPort:     int(req.RouteToApp.TargetPort),
 			// Propagate the caller's identity so CreateAppSessionFromReq can build a scoped
@@ -4344,6 +4345,7 @@ func (a *ScopedServerWithRoles) generateUserCerts(ctx context.Context, req proto
 		DBRoles:                          req.RouteToDatabase.Roles,
 		AppSessionID:                     appSessionID,
 		AppName:                          req.RouteToApp.Name,
+		AppScope:                         req.RouteToApp.Scope,
 		AppPublicAddr:                    req.RouteToApp.PublicAddr,
 		AppURI:                           req.RouteToApp.URI,
 		AppTargetPort:                    int(req.RouteToApp.TargetPort),

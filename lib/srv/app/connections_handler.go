@@ -591,6 +591,14 @@ func (c *ConnectionsHandler) authorizeContext(ctx context.Context) (*authz.Scope
 		return nil, nil, nil, trace.Wrap(err)
 	}
 
+	// The cert binds the route to the target app's scope.
+	// Additionally enforce here as an additional safety net,
+	// even if the name and public address happen to match.
+	if identity.RouteToApp.Scope != app.GetScope() {
+		return nil, nil, nil, trace.AccessDenied("certificate app scope %q does not match application scope %q",
+			identity.RouteToApp.Scope, app.GetScope())
+	}
+
 	// When accessing AWS management console, check permissions to assume
 	// requested IAM role as well.
 	var matchers []services.RoleMatcher
