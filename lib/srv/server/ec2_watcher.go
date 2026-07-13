@@ -310,13 +310,27 @@ func (r *EC2DiscoveryResult) collectPermissionError(err error) bool {
 	return false
 }
 
-func (r *EC2DiscoveryResult) collectPermissionErrorOrWarn(ctx context.Context, logger *slog.Logger, err error, msg string, args ...any) {
-	if r.collectPermissionError(err) {
+func (f *ec2InstanceFetcher) collectRegionsPermissionErrorOrWarn(ctx context.Context, result *EC2DiscoveryResult, err error, assumeRoleARN string) {
+	if result.collectPermissionError(err) {
 		return
 	}
 
-	args = append(args, "error", err)
-	logger.WarnContext(ctx, msg, args...)
+	f.Logger.WarnContext(ctx, "Failed to get regions for EC2 discovery",
+		"assume_role_arn", assumeRoleARN,
+		"error", err,
+	)
+}
+
+func (f *ec2InstanceFetcher) collectInstancesPermissionErrorOrWarn(ctx context.Context, result *EC2DiscoveryResult, err error, region, assumeRoleARN string) {
+	if result.collectPermissionError(err) {
+		return
+	}
+
+	f.Logger.WarnContext(ctx, "Failed to get instances for EC2 discovery",
+		"region", region,
+		"assume_role_arn", assumeRoleARN,
+		"error", err,
+	)
 }
 
 func (f *ec2InstanceFetcher) wrapEC2DiscoveryPermissionError(ctx context.Context, err error, issueType, assumeRoleARN, region string) error {
@@ -800,9 +814,7 @@ func (f *ec2InstanceFetcher) GetInstances(ctx context.Context, rotation bool) ([
 			assumeRoleARN: assumeRole.RoleARN,
 		})
 		if err != nil {
-			result.collectPermissionErrorOrWarn(ctx, f.Logger, err, "Failed to get regions for EC2 discovery",
-				"assume_role_arn", assumeRole.RoleARN,
-			)
+			f.collectRegionsPermissionErrorOrWarn(ctx, result, err, assumeRole.RoleARN)
 			continue
 		}
 
@@ -815,10 +827,7 @@ func (f *ec2InstanceFetcher) GetInstances(ctx context.Context, rotation bool) ([
 				ssmRunParams: ssmRunParams,
 			})
 			if err != nil {
-				result.collectPermissionErrorOrWarn(ctx, f.Logger, err, "Failed to get instances for EC2 discovery",
-					"region", region,
-					"assume_role_arn", assumeRole.RoleARN,
-				)
+				f.collectInstancesPermissionErrorOrWarn(ctx, result, err, region, assumeRole.RoleARN)
 				continue
 			}
 
