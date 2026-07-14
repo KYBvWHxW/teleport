@@ -31,7 +31,11 @@ script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 cat > "${script_dir}"/../teleport/container-service/aws/teleport_version_variable.tf <<EOF
 variable "teleport_version" {
   default     = "${VERSION}"
-  description = "The version of Teleport to deploy to ECS."
+  description = <<EOD
+The version of Teleport to deploy.
+Generally, the version of Teleport should be controlled by using the appropriate version of this module.
+This variable is intended for development usage.
+EOD
   type        = string
 }
 EOF
