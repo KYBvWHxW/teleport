@@ -24,12 +24,14 @@ For bugs related to this code, please [open an issue](https://github.com/gravita
 | ---- | ------- |
 | terraform | >= 1.5.7 |
 | aws | >= 6.0 |
+| http | >= 3.0 |
 
 ## Providers
 
 | Name | Version |
 | ---- | ------- |
 | aws | >= 6.0 |
+| http | >= 3.0 |
 
 ## Modules
 
@@ -55,6 +57,7 @@ No modules.
 | [aws_partition.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/data-sources/partition) | data source |
 | [aws_region.this](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/data-sources/region) | data source |
 | [aws_subnet.teleport_agent](https://registry.terraform.io/providers/hashicorp/aws/latest/docs/data-sources/subnet) | data source |
+| [http_http.auto_update](https://registry.terraform.io/providers/hashicorp/http/latest/docs/data-sources/http) | data source |
 
 ## Inputs
 
@@ -62,6 +65,10 @@ No modules.
 | ---- | ----------- | ---- | ------- | :------: |
 | apply\_aws\_tags | Additional AWS tags to apply to all created AWS resources. | `map(string)` | `{}` | no |
 | assign\_public\_ip | Whether to assign public IP addresses to Teleport agent ECS tasks. If this is set to true, then var.ecs\_service\_subnets must be public subnets (route to an internet gateway). Otherwise, var.ecs\_service\_subnets must be private subnets (route to a NAT gateway). | `bool` | `false` | no |
+| auto\_update\_enabled | Whether to resolve the Teleport container version from the configured automatic updates endpoint when applying this module. | `bool` | `false` | no |
+| auto\_update\_group | Update group to query through the v2 automatic updates endpoint. | `string` | `"default"` | no |
+| auto\_update\_release\_channel | Release channel to query through the legacy v1 automatic updates endpoint. | `string` | `"stable/cloud"` | no |
+| auto\_update\_version\_server | Base version server URL for legacy v1 automatic updates. Setting this selects the legacy v1 managed updates protocol instead of the default v2 protocol. | `string` | `null` | no |
 | create | Toggle creation of all resources. | `bool` | `true` | no |
 | create\_security\_group | Whether to create a security group for the Teleport agent ECS tasks. | `bool` | `true` | no |
 | ecs\_cluster\_name | Name of the ECS cluster. | `string` | `"teleport"` | no |

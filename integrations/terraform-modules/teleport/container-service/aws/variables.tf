@@ -31,6 +31,39 @@ variable "apply_aws_tags" {
   type        = map(string)
 }
 
+variable "auto_update_enabled" {
+  default     = false
+  description = "Whether to resolve the Teleport container version from the configured automatic updates endpoint when applying this module."
+  type        = bool
+}
+
+variable "auto_update_group" {
+  default     = "default"
+  description = "Update group to query through the v2 automatic updates endpoint."
+  type        = string
+}
+
+variable "auto_update_release_channel" {
+  default     = "stable/cloud"
+  description = "Release channel to query through the legacy v1 automatic updates endpoint."
+  type        = string
+}
+
+variable "auto_update_version_server" {
+  default     = null
+  description = <<EOF
+Base version server URL for legacy v1 automatic updates.
+Setting this selects the legacy v1 managed updates protocol instead of the default v2 protocol.
+EOF
+  nullable    = true
+  type        = string
+
+  validation {
+    condition     = var.auto_update_version_server == null || strcontains(var.auto_update_version_server, "http")
+    error_message = "When var.auto_update_version_server is set, it must be a valid http(s) URL."
+  }
+}
+
 variable "assign_public_ip" {
   default     = false
   description = <<EOF
