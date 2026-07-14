@@ -54,14 +54,14 @@ variable "create_security_group" {
 }
 
 variable "ecs_cluster_name" {
-  description = "Name of the ECS cluster."
   default     = "teleport"
+  description = "Name of the ECS cluster."
   type        = string
 }
 
 variable "ecs_service_name" {
-  description = "Name of the ECS service."
   default     = "teleport-service"
+  description = "Name of the ECS service."
   type        = string
 }
 
@@ -72,10 +72,10 @@ variable "ecs_task_cloudwatch_log_group_name" {
 }
 
 variable "ecs_task_cloudwatch_log_group_region" {
-  default     = ""
+  default     = null
   description = "AWS region for the ECS task CloudWatch log group. Defaults to the AWS provider region."
-  type        = string
   nullable    = true
+  type        = string
 }
 
 variable "ecs_task_cloudwatch_log_group_retention_days" {
@@ -105,15 +105,21 @@ variable "ecs_task_desired_count" {
   type        = number
 }
 
+variable "ecs_task_force_new_deployment" {
+  default     = false
+  description = "Set to true to force the ECS service to redeploy tasks without configuration changes."
+  type        = bool
+}
+
 variable "ecs_task_memory" {
-  description = "Amount (in MiB) of memory used by the ECS task."
   default     = "4096"
+  description = "Amount (in MiB) of memory used by the ECS task."
   type        = string
 }
 
 variable "ecs_task_name" {
-  description = "Name of the ECS task."
   default     = "teleport-agent"
+  description = "Name of the ECS task."
   type        = string
 }
 

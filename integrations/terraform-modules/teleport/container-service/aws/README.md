@@ -68,11 +68,12 @@ No modules.
 | ecs\_service\_name | Name of the ECS service. | `string` | `"teleport-service"` | no |
 | ecs\_service\_subnets | Subnet IDs where the Teleport agent will be deployed. If var.assign\_public\_ip is true, then all of these subnets must be public subnets (route to an internet gateway). If var.assign\_public\_ip is false, then all of these subnets must be private subnets (route to a NAT gateway). | `list(string)` | n/a | yes |
 | ecs\_task\_cloudwatch\_log\_group\_name | Name for the ECS task CloudWatch log group. | `string` | `"ecs-teleport"` | no |
-| ecs\_task\_cloudwatch\_log\_group\_region | AWS region for the ECS task CloudWatch log group. Defaults to the AWS provider region. | `string` | `""` | no |
+| ecs\_task\_cloudwatch\_log\_group\_region | AWS region for the ECS task CloudWatch log group. Defaults to the AWS provider region. | `string` | `null` | no |
 | ecs\_task\_cloudwatch\_log\_group\_retention\_days | Number of days to retain logs in the ECS task CloudWatch log group. | `number` | `30` | no |
 | ecs\_task\_cloudwatch\_log\_group\_skip\_destroy | Whether to preserve the ECS task CloudWatch log group when destroying module resources. Set to true if you do not wish the log group (and any logs it may contain) to be deleted at destroy time, and instead just remove the log group from the Terraform state. | `bool` | `false` | no |
 | ecs\_task\_cpu | Number of cpu units used by the ECS task. | `string` | `"2048"` | no |
 | ecs\_task\_desired\_count | Desired number of Teleport ECS tasks to run. | `number` | `2` | no |
+| ecs\_task\_force\_new\_deployment | Set to true to force the ECS service to redeploy tasks without configuration changes. | `bool` | `false` | no |
 | ecs\_task\_memory | Amount (in MiB) of memory used by the ECS task. | `string` | `"4096"` | no |
 | ecs\_task\_name | Name of the ECS task. | `string` | `"teleport-agent"` | no |
 | environment\_vars | Environment variables to set on the Teleport ECS container. | `map(string)` | `{}` | no |

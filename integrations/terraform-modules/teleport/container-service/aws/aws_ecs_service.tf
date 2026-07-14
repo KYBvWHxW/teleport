@@ -9,12 +9,13 @@ locals {
 resource "aws_ecs_service" "teleport_agent" {
   count = var.create ? 1 : 0
 
-  cluster         = one(aws_ecs_cluster.teleport_agent[*].id)
-  desired_count   = var.ecs_task_desired_count
-  launch_type     = "FARGATE"
-  name            = var.ecs_service_name
-  task_definition = one(aws_ecs_task_definition.teleport_agent[*].arn)
-  tags            = var.apply_aws_tags
+  cluster              = one(aws_ecs_cluster.teleport_agent[*].id)
+  desired_count        = var.ecs_task_desired_count
+  force_new_deployment = var.ecs_task_force_new_deployment
+  launch_type          = "FARGATE"
+  name                 = var.ecs_service_name
+  task_definition      = one(aws_ecs_task_definition.teleport_agent[*].arn)
+  tags                 = var.apply_aws_tags
 
   lifecycle {
     precondition {

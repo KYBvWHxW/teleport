@@ -5,14 +5,14 @@
 resource "aws_ecs_task_definition" "teleport_agent" {
   count = var.create ? 1 : 0
 
-  family                   = var.ecs_task_name
-  requires_compatibilities = ["FARGATE"]
   cpu                      = var.ecs_task_cpu
+  execution_role_arn       = one(aws_iam_role.ecs_execution[*].arn)
+  family                   = var.ecs_task_name
   memory                   = var.ecs_task_memory
   network_mode             = "awsvpc"
-  task_role_arn            = one(aws_iam_role.ecs_task[*].arn)
-  execution_role_arn       = one(aws_iam_role.ecs_execution[*].arn)
+  requires_compatibilities = ["FARGATE"]
   tags                     = var.apply_aws_tags
+  task_role_arn            = one(aws_iam_role.ecs_task[*].arn)
 
   container_definitions = jsonencode([
     {
